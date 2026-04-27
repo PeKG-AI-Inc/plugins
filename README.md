@@ -26,10 +26,42 @@ After install, the agent will prompt you to connect via browser (Google sign-in)
 
 ## How It Works
 
-1. **Install** - One command or ask your agent to read the llms.txt
-2. **Connect** - Browser opens for Google sign-in
-3. **Code** - Work normally, PeKG learns in the background
-4. **Recall** - Relevant knowledge appears automatically in future sessions
+```mermaid
+flowchart LR
+    subgraph Session["Your Coding Session"]
+        A[Session Start] --> B[You type a prompt]
+        B --> C{Agent wants to edit?}
+        C -->|Yes| D{Blockers active?}
+        D -->|Yes| E[Block until acknowledged]
+        D -->|No| F[Allow edit]
+        E --> F
+        F --> G[Post-tool: extract learnings]
+        G --> B
+    end
+
+    subgraph PeKG["PeKG Cloud"]
+        H[(Knowledge Graph)]
+    end
+
+    A -.->|fetch context| H
+    B -.->|inject relevant knowledge| H
+    G -.->|store patterns & gotchas| H
+
+    style A fill:#1a1a1a,stroke:#61dafb,color:#61dafb
+    style B fill:#1a1a1a,stroke:#61dafb,color:#61dafb
+    style C fill:#2d2d2d,stroke:#fbbf24,color:#fbbf24
+    style D fill:#2d2d2d,stroke:#f87171,color:#f87171
+    style E fill:#1a1a1a,stroke:#f87171,color:#f87171
+    style F fill:#1a1a1a,stroke:#4ade80,color:#4ade80
+    style G fill:#1a1a1a,stroke:#61dafb,color:#61dafb
+    style H fill:#2d2d2d,stroke:#a78bfa,color:#a78bfa
+```
+
+**The flow:**
+1. **Session Start** - Plugin fetches your KB health stats
+2. **Prompt Submit** - Relevant knowledge injected into context
+3. **Pre-Tool Gate** - Blockers prevent edits until you acknowledge known gotchas
+4. **Post-Tool Learn** - Patterns extracted from your work, stored for future
 
 ### Blockers
 
