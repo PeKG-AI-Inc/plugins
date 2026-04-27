@@ -95,9 +95,9 @@ cp codex/dist/*.sh ~/.codex/hooks/
 ## Links
 
 - **Website**: https://pekg.ai
+- **Get Started**: https://pekg.ai/get-started
 - **Dashboard**: https://app.pekg.ai
 - **Docs**: https://pekg.ai/docs
-- **API**: https://api.pekg.ai
 
 ## License
 
