@@ -910,6 +910,34 @@ function pekgBashCmdTargetsMarkdown(cmd: string): boolean {
   return /(?:\bsed\s+-[A-Za-z]*i\b|\btee\b|>>?\s*|\bcp\b|\bmv\b)[^|;&]*\.(md|mdx|txt|rst|adoc)\b/i.test(cmd);
 }
 
+// Returns true if any `>`, `>>`, or `&>` redirect in the command targets a
+// workspace path (i.e., not a scratch dir or fd alias). Mirrors
+// pekg_redirect_targets_workspace in plugins/shared/lib/blockers.sh — keep in sync.
+function redirectTargetsWorkspace(cmd: string): boolean {
+  const home = process.env.HOME ?? "";
+  const tmpdir = process.env.TMPDIR ?? "";
+  const scratchPrefixes = [
+    "/dev/",
+    "/tmp/",
+    "/var/tmp/",
+    "/var/folders/",
+    "/private/var/folders/",
+    home ? `${home}/.cache/` : "",
+    home ? `${home}/.pekg/` : "",
+    home ? `${home}/Library/Caches/` : "",
+    tmpdir ? (tmpdir.endsWith("/") ? tmpdir : `${tmpdir}/`) : "",
+  ].filter(Boolean);
+  const re = /(?:^|[\s;&|`])(?:[0-9]?>>?|&>)\s*([^\s|;&`]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    const target = m[1];
+    if (target.startsWith("&")) continue; // fd alias (&1, &2)
+    if (scratchPrefixes.some((p) => target.startsWith(p))) continue;
+    return true;
+  }
+  return false;
+}
+
 function isWorkspaceFileMutationCommand(cmd: string, workspaceDir: string): boolean {
   if (!cmd) return false;
   const c = cmd;
@@ -923,10 +951,11 @@ function isWorkspaceFileMutationCommand(cmd: string, workspaceDir: string): bool
     (c.includes(ws) || /\.\.?\//.test(c) || !c.includes("/"))
   )
     return true;
-  // File-write redirect: > or >> (optionally preceded by a fd digit, or &>
-  // for stdout+stderr), followed by a target that is NOT an fd alias (&N)
-  // and NOT /dev/*. This excludes `2>&1`, `1>&2`, `2>/dev/null`, etc.
-  if (/(?:^|[\s;&|`])(?:[0-9]?>>?|&>)\s*(?!&)(?!\/dev\/)[^\s]/.test(c)) return true;
+  // File-write redirect: > or >> (optionally preceded by an fd digit, or &>
+  // for stdout+stderr). Whitelists scratch dirs (/dev, /tmp, /var/folders,
+  // $TMPDIR, $HOME/.cache, $HOME/.pekg, $HOME/Library/Caches) and fd aliases
+  // (&1, &2). Anything else is treated as a workspace mutation.
+  if (redirectTargetsWorkspace(c)) return true;
   // Heredoc alone is not a file write — `cat <<EOF` outputs to stdout.
   // Heredocs paired with `> file` are already caught by the redirect rule.
   if (/(python|python3|node|bun|deno)\s+-[ec]\s+["'][\s\S]*(open\(|writeFileSync|writeFile|fs\.write)/.test(c))

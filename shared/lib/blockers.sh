@@ -228,12 +228,14 @@ pekg_bash_cmd_targets_markdown() {
   printf '%s' "$cmd" | grep -qiE '(\bsed\s+-[A-Za-z]*i\b|\btee\b|>>?\s*|\bcp\b|\bmv\b)[^|;&]*\.(md|mdx|txt|rst|adoc)\b'
 }
 
-# A17: dangerous-bash detection (regex from OpenCode plugin v3.10.4 with 2>&1 fix).
-# Returns 0 if the bash command is a workspace file mutation.
+# A17: dangerous-bash detection. Returns 0 if the bash command is a
+# workspace file mutation. Whitelists scratch dirs (/tmp, /var/folders,
+# $TMPDIR, $HOME/.cache, $HOME/.pekg, $HOME/Library/Caches) so commands
+# writing to non-workspace paths aren't gated as mutations.
 pekg_is_workspace_mutation_cmd() {
   local cmd="${1:-}"
-  # File redirects (excluding /dev/* and 2>&1 false-positive)
-  if printf '%s' "$cmd" | grep -qE '(^|[ ;&|`])([0-9]?>>?|&>)\s*(?!&)(?!/dev/)[^[:space:]]'; then return 0; fi 2>/dev/null
+  # File redirects to a workspace path
+  if pekg_redirect_targets_workspace "$cmd"; then return 0; fi
   # In-place editors
   if printf '%s' "$cmd" | grep -qE '(^|\s)(sed -i|perl -pi|awk -i inplace|tee\s)'; then return 0; fi
   # Heredoc with redirect
@@ -243,5 +245,36 @@ pekg_is_workspace_mutation_cmd() {
   if printf '%s' "$cmd" | grep -qE 'fs\.(write|append|create)'; then return 0; fi
   # Git mutating subcommands
   if printf '%s' "$cmd" | grep -qE '(^|\s)git (apply|restore|checkout)'; then return 0; fi
+  return 1
+}
+
+# Returns 0 if any `>`, `>>`, or `&>` redirect in the command targets a
+# workspace path (i.e., not a scratch dir or fd alias). Targets like
+# `&1`, `/dev/null`, `/tmp/foo`, `$TMPDIR/bar`, `$HOME/.cache/baz` are
+# NOT considered workspace mutations.
+pekg_redirect_targets_workspace() {
+  local cmd="${1:-}"
+  # Quick reject: no redirect operators at all
+  printf '%s' "$cmd" | grep -qE '([0-9]?>>?|&>)' || return 1
+  # Extract all redirect targets (operator + first non-space token)
+  local targets t
+  targets=$(printf '%s' "$cmd" \
+    | grep -oE '([0-9]?>>?|&>)[[:space:]]*[^[:space:]|;&`]+' \
+    | sed -E 's/^([0-9]?>>?|&>)[[:space:]]*//')
+  while IFS= read -r t; do
+    [ -z "$t" ] && continue
+    # Fd alias (e.g. &1, &2): not a file write. Quote the literal & so bash
+    # doesn't parse it as the background operator.
+    case "$t" in '&'*) continue ;; esac
+    # Scratch dirs: not workspace
+    case "$t" in
+      /dev/*|/tmp/*|/var/tmp/*|/var/folders/*|/private/var/folders/*) continue ;;
+      "$HOME"/.cache/*|"$HOME"/.pekg/*|"$HOME"/Library/Caches/*) continue ;;
+    esac
+    if [ -n "${TMPDIR:-}" ]; then
+      case "$t" in "$TMPDIR"*) continue ;; esac
+    fi
+    return 0
+  done <<< "$targets"
   return 1
 }
