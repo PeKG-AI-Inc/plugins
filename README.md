@@ -24,10 +24,11 @@ Or just ask your agent: *"Read https://pekg.ai/llms.txt and set up PeKG"*
 
 ## How It Works
 
-1. **Connect** - Run `/pekg-connect` in your agent to authenticate via browser
-2. **Code** - Work normally. The plugin tracks context and extracts knowledge
-3. **Learn** - PeKG compiles patterns, gotchas, and decisions into your knowledge base
-4. **Recall** - Relevant knowledge is injected into future sessions automatically
+1. **Install** - One command or just ask your agent to read `https://pekg.ai/llms.txt`
+2. **Connect** - Agent calls `pekg_connect` tool, browser opens for Google sign-in
+3. **Code** - Work normally. The plugin tracks context and extracts knowledge
+4. **Learn** - PeKG compiles patterns, gotchas, and decisions into your knowledge base
+5. **Recall** - Relevant knowledge is injected into future sessions automatically
 
 ### Blocker System
 
