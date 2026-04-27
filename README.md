@@ -1,120 +1,103 @@
 # PeKG Plugins
 
-Three host CLIs, one source tree:
+Official plugins to connect your AI coding agent to [PeKG](https://pekg.ai) - the personal knowledge graph that makes your agent smarter across all your projects.
+
+## What is PeKG?
+
+PeKG builds a cross-project knowledge graph from your coding sessions. When you fix a bug, discover a gotcha, or learn something new, PeKG captures it and surfaces it back when relevant - even in different projects.
+
+**Key features:**
+- **Cross-project learning** - Knowledge from Project A helps you in Project B
+- **Blocker enforcement** - Known gotchas are surfaced before you hit them
+- **BYOLLM** - Your agent does all the work, PeKG just stores and retrieves
+- **Multi-agent support** - Works with OpenCode, Claude Code, Codex, Cursor, and more
+
+## Supported Agents
+
+| Agent | Plugin Type | Install |
+|-------|-------------|---------|
+| **OpenCode** | TypeScript plugin | `curl -o ~/.config/opencode/plugins/pekg.ts https://api.pekg.ai/plugins/opencode.ts` |
+| **Claude Code** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/claude-code/install.sh \| bash` |
+| **Codex** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/codex/install.sh \| bash` |
+
+Or just ask your agent: *"Read https://pekg.ai/llms.txt and set up PeKG"*
+
+## How It Works
+
+1. **Connect** - Run `/pekg-connect` in your agent to authenticate via browser
+2. **Code** - Work normally. The plugin tracks context and extracts knowledge
+3. **Learn** - PeKG compiles patterns, gotchas, and decisions into your knowledge base
+4. **Recall** - Relevant knowledge is injected into future sessions automatically
+
+### Blocker System
+
+When PeKG detects you're about to hit a known issue, it injects a **blocker** that must be acknowledged before file-mutating tools (edit, write, etc.) are allowed. This prevents you from repeating past mistakes.
 
 ```
-plugins/
-  opencode.ts                 # OpenCode plugin (TypeScript, single file, v3.13.1) — production
-  claude-code/
-    hooks/                    # source hook scripts with `# @inline` markers
-    skills/pekg-connect/      # /pekg-connect Skill
-    dist/                     # build output: self-contained scripts (CDN target)
-  codex/
-    hooks/                    # source hook scripts
-    prompts/                  # /prompts:pekg-connect custom prompt
-    dist/                     # build output: self-contained scripts (CDN target)
-  shared/
-    lib/                      # bash helpers — repo source only, never deployed
-    bin/                      # one-time install scripts (pekg-connect.sh)
-  build.sh                    # bundles `# @inline` markers into self-contained dist/ files
+<pekg-active-blockers>
+- Deploy Gotcha: SCP files get wiped by git pull + pnpm build
+</pekg-active-blockers>
 ```
 
-## Build
+You acknowledge by describing your concrete mitigation in the chat, then tools unblock.
 
-```sh
-bash plugins/build.sh
+## Repository Structure
+
+```
+opencode/          # TypeScript plugin (single file)
+claude-code/       # Bash hooks for Claude Code
+  hooks/           # Individual lifecycle hooks
+  skills/          # /pekg-connect skill
+codex/             # Bash hooks for Codex CLI
+  hooks/           # Individual lifecycle hooks
+  prompts/         # Custom prompts
+shared/            # Common bash libraries
+tests/             # Smoke tests
+build.sh           # Builds dist/ from source hooks
 ```
 
-Each `# @inline shared/lib/<name>.sh` line in a source hook is replaced with the file's stripped contents. Output lands in `<target>/dist/`. Users only ever curl `dist/` files — they don't touch `shared/` or `hooks/`.
+## Development
 
-`dist/` is gitignored (root `.gitignore` excludes `dist/`); the CDN deploy step runs `build.sh` on the gateway before serving, so the artefacts are always fresh from source.
+### Building
 
-## Distribution (planned)
-
-CDN at `api.pekg.ai/plugins/`:
-
-| Target | Install | Update |
-|---|---|---|
-| OpenCode | `curl -o ~/.config/opencode/plugins/pekg.ts https://api.pekg.ai/plugins/opencode.ts` | Plugin self-fetches on session start (in TS source) |
-| Claude Code | `curl -fsSL https://api.pekg.ai/plugins/install-claude-code.sh \| bash` | `SessionStart` hook self-fetches updated dist scripts |
-| Codex | `curl -fsSL https://api.pekg.ai/plugins/install-codex.sh \| bash` | `SessionStart` hook self-fetches updated dist scripts |
-
-Single-file install per hook: identical to the OpenCode model (single-file plugin), just multiple files because each Claude Code/Codex hook is its own subprocess.
-
-## Ability coverage (vs OpenCode plugin v3.13.1)
-
-OpenCode plugin abilities A1–A60 catalogued in `docs/plans/PEKG_PLUGIN_MULTI_TARGET_PORT.md`. This README only tracks the host-portable subset. ✅ = covered, ⚠️ = lossy workaround (per plan §6), ❌ = pending implementation.
-
-### Claude Code
-
-| Hook | Abilities covered |
-|---|---|
-| `SessionStart` (sessionstart.sh) | ✅ A7a rehydrate, A13 auto-update, A14 state envelope, A37/A50 KB health line, A38 cleanup TTL, A45 restart prompt, A48 NETWORK_BLOCKER lifecycle |
-| `UserPromptSubmit` (userpromptsubmit.sh) | ✅ A1 context inject, A1b relevance thresholds, A19 dedup, A20 first-message gating, A21/A22/A41 proactive queue drain, A33 guaranteed-blocks, A48 inverse, A55 STOP/friendly banner; ⚠️ A2b "treat as system" prefix |
-| `PreToolUse` (pretooluse.sh) | ✅ A5a proactive context fetch on read/grep/glob, A5b blocker gate, A5e idempotent gate, A8 auto-deny, A17 dangerous-bash, legacy status-first gate |
-| `PostToolUse` (posttooluse.sh) | ✅ A5c/A6b active-files tracking, A6a tech detection, A24/A53/A100 TECH_PATTERNS, A21/A22 proactive queueing, A36 implicit feedback, status-called marker |
-| `Stop` (stop.sh) | ✅ A7c degraded ack detection, A30 deterministic-ack heuristic, A102 KB_INGEST parsing |
-| `PreCompact` (precompact.sh) | ✅ A4a structured prompt + A4d cache invalidation; ⚠️ A4b wall-clock impossible (plan §6.3) |
-| `PermissionRequest` (permissionrequest.sh) | ✅ A8 auto-deny on mutating tool with active blockers |
-| Skill `pekg-connect` | ✅ A47 OTP browser auth flow, A2a/A40 install-time CLAUDE.md write, A55 token save 0600, A56 MCP wiring |
-| **Pending** | ❌ A6c BYOLLM feedback verifier (needs `claude -p` subprocess), ❌ A23 task-subagent blocker propagation, ❌ A25 diff queueing for ingest analysis, ❌ A39 deferred-rendering bridge (likely unnecessary on CC) |
-
-### Codex
-
-| Hook | Abilities covered |
-|---|---|
-| `SessionStart` | ✅ A7a, A13 auto-update, A14, A37/A50, A38, A45, A48 |
-| `UserPromptSubmit` | ✅ A1, A1b, A19, A20, A21/A22 drain, A33, A48 inverse, A55; ⚠️ A2b workaround |
-| `PreToolUse` | ✅ A5a, A5b, A8, A17 |
-| `PostToolUse` | ✅ A5c/A6b on `apply_patch`, A6a tech detection, A21/A22 queueing, A36 implicit feedback |
-| `Stop` | ✅ A7c degraded, A30, A102 KB_INGEST |
-| `PermissionRequest` | ✅ A8 |
-| Custom prompt `pekg-connect` | ✅ A47 + A2a/A40 install-time AGENTS.md write |
-| **Pending** | ❌ A6c BYOLLM feedback verifier (needs `codex exec --ephemeral`), ❌ A23, ❌ A25, ❌ A4 PreCompact equivalent (Codex has no hook; only `compact_prompt` config — workaround: pekg-connect can write that at install time) |
-
-## Tests
-
-```sh
-bash plugins/tests/run.sh
+```bash
+bash build.sh
 ```
 
-Currently **14 smoke tests, all passing** — covers SessionStart no-token / offline / NETWORK_BLOCKER, PreToolUse blocker gate, dangerous-bash, no-blockers allow, PermissionRequest deny, PreCompact structured prompt, Stop KB_INGEST parsing, Codex SessionStart parity, Codex PreToolUse apply_patch gate.
+This inlines `shared/lib/*.sh` into each hook script, producing self-contained files in `*/dist/`.
 
-### Items host-impossible (lossy on Claude Code/Codex per §6 of plan)
+### Testing
 
-- **A2b** mid-session per-message system slot — workaround: `additionalContext` with "treat as system" prefix.
-- **A3** message-history rewrite — no host primitive at all.
-- **A4b** sub-2s flash compaction wall-clock — workaround: `PreCompact` injects content but LLM still summarizes.
-- **A10** dynamic tool description rewrite — workaround: install-time system note + rich deny-reason.
+```bash
+bash tests/run.sh
+```
 
-## Local install (developer)
+14 smoke tests covering all major hooks and edge cases.
 
-For local hacking, run `build.sh` then symlink `dist/` files to host config dirs:
+### Local Install (Dev)
 
-```sh
-# Claude Code
+```bash
+# OpenCode
+cp opencode/opencode.ts ~/.config/opencode/plugins/pekg.ts
+
+# Claude Code (after build)
 mkdir -p ~/.pekg/hooks
-for f in plugins/claude-code/dist/*.sh; do
-  ln -sf "$PWD/$f" ~/.pekg/hooks/$(basename "$f")
-done
-# then update ~/.claude/settings.json hooks block manually
+cp claude-code/dist/*.sh ~/.pekg/hooks/
+# Then wire in ~/.claude/settings.json
 
-# Codex
+# Codex (after build)
 mkdir -p ~/.codex/hooks
-for f in plugins/codex/dist/*.sh; do
-  ln -sf "$PWD/$f" ~/.codex/hooks/$(basename "$f")
-done
-# then update ~/.codex/hooks.json
+cp codex/dist/*.sh ~/.codex/hooks/
+# Then wire in ~/.codex/hooks.json
 ```
 
-A proper installer that wires `settings.json` / `hooks.json` automatically is part of the next iteration.
+## Links
 
-## Testing
+- **Website**: https://pekg.ai
+- **Dashboard**: https://app.pekg.ai
+- **Docs**: https://pekg.ai/docs
+- **API**: https://api.pekg.ai
 
-```sh
-# Syntax check all built artefacts
-for f in plugins/*/dist/*.sh plugins/shared/bin/*.sh; do bash -n "$f" || echo "FAIL: $f"; done
+## License
 
-# Smoke tests with seeded session state
-bash plugins/tests/run.sh   # TODO
-```
+MIT
