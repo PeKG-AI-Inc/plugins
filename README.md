@@ -113,27 +113,48 @@ File-editing tools (`edit`, `write`, `apply_patch`, etc.) are gated until you ac
 | **Codex** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/codex/install.sh \| bash` |
 | **Cursor / Windsurf** | MCP server | Via `llms.txt` |
 
-### IDE Extensions
+### IDE Plugins
 
-| IDE | Download |
-|-----|----------|
-| **VS Code** | [pekg-vscode-0.1.0.vsix](https://app.pekg.ai/downloads/pekg-vscode-0.1.0.vsix) |
-| **JetBrains** | [pekg-jetbrains-0.1.0.zip](https://app.pekg.ai/downloads/pekg-jetbrains-0.1.0.zip) |
+| Plugin | Description |
+|--------|-------------|
+| **VS Code** | Context panel, search, inline hints |
+| **JetBrains** | IntelliJ, WebStorm, PyCharm, all JetBrains IDEs |
+| **Obsidian** | Search and ingest from your vault |
+| **Raycast** | Quick search and ingest from macOS |
 
-### Productivity Tools
+### Webhook Integrations
 
-| Tool | Download |
-|------|----------|
-| **Obsidian** | [pekg-obsidian-0.1.0.zip](https://app.pekg.ai/downloads/pekg-obsidian-0.1.0.zip) |
-| **Raycast** | [pekg-raycast-0.1.0.zip](https://app.pekg.ai/downloads/pekg-raycast-0.1.0.zip) |
+| Integration | Type | Description |
+|-------------|------|-------------|
+| **Slack** | OAuth | Post to channels, receive commands |
+| **Discord** | OAuth | Notifications and commands |
+| **Microsoft Teams** | Webhook | Adaptive Cards via Workflows |
+| **Linear** | Webhook | /pekg commands in issues |
+| **Jira** | OAuth | Sync with Jira projects |
+| **GitHub** | OAuth | PR ingestion, drift checks |
+| **Notion** | OAuth | Sync pages bidirectionally |
+| **Google Docs** | Inbound | Sync docs into knowledge graph |
+| **Confluence** | Inbound | Sync Confluence pages |
 
-### Automation & CI/CD
+### Observability
+
+| Integration | Type | Description |
+|-------------|------|-------------|
+| **Datadog** | Webhook | Metrics and events |
+| **Splunk** | Webhook | HEC integration |
+| **PagerDuty** | Webhook | Drift alert incidents |
+| **Opsgenie** | Webhook | Drift detection alerts |
+
+### Automation
 
 | Platform | Description |
 |----------|-------------|
-| **GitHub Actions** | `check-drift`, `context`, `ingest-pr` actions for CI/CD |
-| **Zapier** | Connect PeKG to 5,000+ apps |
-| **n8n** | Community node for workflow automation |
+| **GitHub Actions** | `check-drift`, `context`, `ingest-pr` |
+| **Zapier** | Connect to 5,000+ apps |
+| **n8n** | Workflow automation node |
+| **Email Digest** | Weekly knowledge summaries |
+
+All extensions configurable at [app.pekg.ai/settings/extensions](https://app.pekg.ai/settings/extensions)
 
 Or just ask any agent to read `https://pekg.ai/llms.txt`.
 
