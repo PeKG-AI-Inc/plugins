@@ -1,35 +1,10 @@
-<h1 align="center">
-  <br>
-  <a href="https://pekg.ai">
-    <img src="https://pekg.ai/logo.png" alt="PeKG" width="200">
-  </a>
-  <br>
-  PeKG Plugins
-  <br>
-</h1>
+# <img src="https://pekg.ai/logo.png" alt="PeKG" height="32"> PeKG Plugins
 
-<h4 align="center">Cross-project knowledge graph plugins for AI coding agents</h4>
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.1.67-green.svg)](VERSION)
 
-<p align="center">
-  <a href="https://github.com/PeKG-AI-Inc/plugins/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License">
-  </a>
-  <a href="VERSION">
-    <img src="https://img.shields.io/badge/version-0.1.67-green.svg" alt="Version">
-  </a>
-</p>
+Cross-project knowledge graph plugins for AI coding agents. Fix a bug once, never hit it again.
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#why-pekg">Why PeKG</a> •
-  <a href="#how-it-works">How It Works</a> •
-  <a href="#supported-agents">Supported Agents</a> •
-  <a href="#features">Features</a>
-</p>
-
-<p align="center">
-  PeKG captures knowledge from your coding sessions and surfaces it when relevant — across all your projects. Fix a bug once, never hit it again. Learn a pattern, have it suggested everywhere.
-</p>
+[Quick Start](#quick-start) | [Why PeKG](#why-pekg) | [How It Works](#how-it-works) | [Supported Agents](#supported-agents) | [Features](#features)
 
 ---
 
