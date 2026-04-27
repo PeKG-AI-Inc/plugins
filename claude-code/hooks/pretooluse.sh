@@ -53,25 +53,36 @@ main() {
   # Issue 8 port: when the target file path is markdown, demote code-domain
   # blockers to warning before deciding whether to gate. Same rules as the
   # OpenCode plugin (security/privacy/compliance carve-outs unchanged).
+  #
+  # Bash variants intentionally skip THIS gate — they have their own dedicated
+  # gate below that calls pekg_is_workspace_mutation_cmd, so read-only commands
+  # like `git ls-tree`, `cat`, `grep` flow through even with active blockers.
+  # Without this skip, the early gate denied ALL Bash on any active blocker,
+  # which forced agents to "bypass" via Read/Grep/Glob just to make progress.
   pekg_load_config
   if [ -n "$session_id" ] && pekg_is_mutating_tool "$tool"; then
-    local state blockers
-    state=$(pekg_state_read "$session_id" 2>/dev/null || true)
-    if [ -n "$state" ]; then
-      blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
-      if pekg_has_active_blockers "$blockers"; then
-        # Extract target file path from CC's tool_input shape.
-        local target_path
-        target_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
-        local effective_blockers
-        effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "$target_path")
-        if pekg_has_active_blockers "$effective_blockers"; then
-          local reason
-          reason=$(pekg_format_denial_reason "$effective_blockers")
-          deny "$reason"
+    case "$tool" in
+      Bash|bash|shell|run_terminal_cmd) ;;  # defer to dedicated bash gate below
+      *)
+        local state blockers
+        state=$(pekg_state_read "$session_id" 2>/dev/null || true)
+        if [ -n "$state" ]; then
+          blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+          if pekg_has_active_blockers "$blockers"; then
+            # Extract target file path from CC's tool_input shape.
+            local target_path
+            target_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
+            local effective_blockers
+            effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "$target_path")
+            if pekg_has_active_blockers "$effective_blockers"; then
+              local reason
+              reason=$(pekg_format_denial_reason "$effective_blockers")
+              deny "$reason"
+            fi
+          fi
         fi
-      fi
-    fi
+        ;;
+    esac
   fi
 
   # A17: dangerous-bash detection on bash tool.

@@ -700,3 +700,94 @@ describe("Issue 8: pekgBashCmdTargetsMarkdown — bash gate detection", () => {
     expect(pekgBashCmdTargetsMarkdown("grep -r foo docs/")).toBe(false);
   });
 });
+
+// Inline copy of redirectTargetsWorkspace from opencode.ts (mirror of
+// pekg_redirect_targets_workspace in shared/lib/blockers.sh). Keep in sync.
+function redirectTargetsWorkspace(cmd: string): boolean {
+  const home = process.env.HOME ?? "";
+  const tmpdir = process.env.TMPDIR ?? "";
+  const scratchPrefixes = [
+    "/dev/",
+    "/tmp/",
+    "/var/tmp/",
+    "/var/folders/",
+    "/private/var/folders/",
+    home ? `${home}/.cache/` : "",
+    home ? `${home}/.pekg/` : "",
+    home ? `${home}/Library/Caches/` : "",
+    tmpdir ? (tmpdir.endsWith("/") ? tmpdir : `${tmpdir}/`) : "",
+  ].filter(Boolean);
+  const re = /(?:^|[\s;&|`])(?:[0-9]?>>?|&>)\s*([^\s|;&`]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(cmd)) !== null) {
+    const target = m[1];
+    if (target.startsWith("&")) continue;
+    if (scratchPrefixes.some((p) => target.startsWith(p))) continue;
+    return true;
+  }
+  return false;
+}
+
+describe("redirectTargetsWorkspace — scratch-dir whitelist for `>` redirects", () => {
+  test("CANARY: /tmp redirect is NOT a workspace mutation", () => {
+    expect(redirectTargetsWorkspace("echo hi > /tmp/foo.txt")).toBe(false);
+  });
+
+  test("scratch dirs all whitelisted", () => {
+    expect(redirectTargetsWorkspace("ls > /tmp/x")).toBe(false);
+    expect(redirectTargetsWorkspace("ls > /var/tmp/x")).toBe(false);
+    expect(redirectTargetsWorkspace("ls > /var/folders/abc/T/y")).toBe(false);
+    expect(redirectTargetsWorkspace("ls > /private/var/folders/abc/T/y")).toBe(false);
+    expect(redirectTargetsWorkspace("ls > /dev/null")).toBe(false);
+  });
+
+  test("$HOME cache subpaths whitelisted", () => {
+    const home = process.env.HOME ?? "";
+    expect(redirectTargetsWorkspace(`echo > ${home}/.cache/foo`)).toBe(false);
+    expect(redirectTargetsWorkspace(`echo > ${home}/.pekg/foo`)).toBe(false);
+    expect(redirectTargetsWorkspace(`echo > ${home}/Library/Caches/foo`)).toBe(false);
+  });
+
+  test("fd aliases (&1, &2) are not file writes", () => {
+    expect(redirectTargetsWorkspace("cmd > /dev/null 2>&1")).toBe(false);
+    expect(redirectTargetsWorkspace("cmd 1>&2")).toBe(false);
+    expect(redirectTargetsWorkspace("cmd 2>&1 | grep foo")).toBe(false);
+  });
+
+  test("relative paths flagged (resolve to cwd = workspace)", () => {
+    expect(redirectTargetsWorkspace("echo hi > output.txt")).toBe(true);
+    expect(redirectTargetsWorkspace("ls >> log.out")).toBe(true);
+    expect(redirectTargetsWorkspace("cmd &> err.log")).toBe(true);
+  });
+
+  test("absolute workspace paths flagged", () => {
+    expect(redirectTargetsWorkspace("echo > /Users/x/IdeaProjects/Foo/bar.ts")).toBe(true);
+  });
+
+  test("$HOME root (not a whitelisted subpath) flagged", () => {
+    const home = process.env.HOME ?? "/root";
+    expect(redirectTargetsWorkspace(`echo > ${home}/scratch.txt`)).toBe(true);
+  });
+
+  test("mixed cmds: any one workspace target → flagged", () => {
+    expect(redirectTargetsWorkspace("ls > /tmp/a; echo > local.txt")).toBe(true);
+  });
+
+  test("pipeline ending in /tmp redirect → safe", () => {
+    expect(redirectTargetsWorkspace("git ls-tree HEAD | sort | head > /tmp/x.txt")).toBe(false);
+  });
+
+  test("no redirects at all → safe", () => {
+    expect(redirectTargetsWorkspace("git ls-tree HEAD")).toBe(false);
+    expect(redirectTargetsWorkspace("ls -la /etc")).toBe(false);
+  });
+
+  test("fd-numbered redirect to scratch → safe", () => {
+    expect(redirectTargetsWorkspace("cmd 2>/dev/null")).toBe(false);
+    expect(redirectTargetsWorkspace("cmd 2>/tmp/err.log")).toBe(false);
+  });
+
+  test("fd-numbered redirect to workspace → flagged", () => {
+    expect(redirectTargetsWorkspace("cmd 2>err.log")).toBe(true);
+  });
+});
