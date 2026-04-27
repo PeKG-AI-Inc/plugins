@@ -46,11 +46,16 @@ When one engineer learns something the hard way, the whole team gets it for free
 
 ### Shared Knowledge, Three Tiers
 
-| Tier | Visibility | Use case |
-|------|------------|----------|
-| **Private** | You only | Personal patterns, work-in-progress |
-| **Team Pool** | Your org | Deploy gotchas, internal conventions, post-mortems |
-| **Hive** (opt-in) | Public community | Generic patterns worth sharing back |
+<table width="100%">
+<thead>
+<tr><th width="22%">Tier</th><th width="28%">Visibility</th><th width="50%">Use case</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Private</strong></td><td>You only</td><td>Personal patterns, work-in-progress</td></tr>
+<tr><td><strong>Team Pool</strong></td><td>Your org</td><td>Deploy gotchas, internal conventions, post-mortems</td></tr>
+<tr><td><strong>Hive</strong> (opt-in)</td><td>Public community</td><td>Generic patterns worth sharing back</td></tr>
+</tbody>
+</table>
 
 You choose what gets promoted. Selective sharing means a `prod deploy` blocker goes to the team; a generic `JWT clock skew` pattern can go to Hive. Nothing leaves your org without an explicit promote.
 
@@ -134,53 +139,78 @@ File-editing tools (`edit`, `write`, `apply_patch`, etc.) are gated until you ac
 
 ### AI Coding Agents
 
-| Agent | Type | Install |
-|-------|------|---------|
-| **OpenCode** | TypeScript plugin | `curl -o ~/.config/opencode/plugins/pekg.ts https://api.pekg.ai/plugins/opencode.ts` |
-| **Claude Code** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/claude-code/install.sh \| bash` |
-| **Codex** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/codex/install.sh \| bash` |
-| **Cursor / Windsurf** | MCP server | Via `llms.txt` |
+<table width="100%">
+<thead>
+<tr><th width="22%">Agent</th><th width="23%">Type</th><th width="55%">Install</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>OpenCode</strong></td><td>TypeScript plugin</td><td><code>curl -o ~/.config/opencode/plugins/pekg.ts https://api.pekg.ai/plugins/opencode.ts</code></td></tr>
+<tr><td><strong>Claude Code</strong></td><td>Bash hooks</td><td><code>curl -fsSL https://api.pekg.ai/plugins/claude-code/install.sh | bash</code></td></tr>
+<tr><td><strong>Codex</strong></td><td>Bash hooks</td><td><code>curl -fsSL https://api.pekg.ai/plugins/codex/install.sh | bash</code></td></tr>
+<tr><td><strong>Cursor / Windsurf</strong></td><td>MCP server</td><td>Via <code>llms.txt</code></td></tr>
+</tbody>
+</table>
 
 ### IDE Plugins
 
-| Plugin | Description |
-|--------|-------------|
-| **VS Code** | Context panel, search, inline hints |
-| **JetBrains** | IntelliJ, WebStorm, PyCharm, all JetBrains IDEs |
-| **Obsidian** | Search and ingest from your vault |
-| **Raycast** | Quick search and ingest from macOS |
+<table width="100%">
+<thead>
+<tr><th width="22%">Plugin</th><th width="78%">Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>VS Code</strong></td><td>Context panel, search, inline hints</td></tr>
+<tr><td><strong>JetBrains</strong></td><td>IntelliJ, WebStorm, PyCharm, all JetBrains IDEs</td></tr>
+<tr><td><strong>Obsidian</strong></td><td>Search and ingest from your vault</td></tr>
+<tr><td><strong>Raycast</strong></td><td>Quick search and ingest from macOS</td></tr>
+</tbody>
+</table>
 
 ### Webhook Integrations
 
-| Integration | Type | Description |
-|-------------|------|-------------|
-| **Slack** | OAuth | Post to channels, receive commands |
-| **Discord** | OAuth | Notifications and commands |
-| **Microsoft Teams** | Webhook | Adaptive Cards via Workflows |
-| **Linear** | Webhook | /pekg commands in issues |
-| **Jira** | OAuth | Sync with Jira projects |
-| **GitHub** | OAuth | PR ingestion, drift checks |
-| **Notion** | OAuth | Sync pages bidirectionally |
-| **Google Docs** | Inbound | Sync docs into knowledge graph |
-| **Confluence** | Inbound | Sync Confluence pages |
+<table width="100%">
+<thead>
+<tr><th width="22%">Integration</th><th width="18%">Type</th><th width="60%">Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Slack</strong></td><td>OAuth</td><td>Post to channels, receive commands</td></tr>
+<tr><td><strong>Discord</strong></td><td>OAuth</td><td>Notifications and commands</td></tr>
+<tr><td><strong>Microsoft Teams</strong></td><td>Webhook</td><td>Adaptive Cards via Workflows</td></tr>
+<tr><td><strong>Linear</strong></td><td>Webhook</td><td>/pekg commands in issues</td></tr>
+<tr><td><strong>Jira</strong></td><td>OAuth</td><td>Sync with Jira projects</td></tr>
+<tr><td><strong>GitHub</strong></td><td>OAuth</td><td>PR ingestion, drift checks</td></tr>
+<tr><td><strong>Notion</strong></td><td>OAuth</td><td>Sync pages bidirectionally</td></tr>
+<tr><td><strong>Google Docs</strong></td><td>Inbound</td><td>Sync docs into knowledge graph</td></tr>
+<tr><td><strong>Confluence</strong></td><td>Inbound</td><td>Sync Confluence pages</td></tr>
+</tbody>
+</table>
 
 ### Observability
 
-| Integration | Type | Description |
-|-------------|------|-------------|
-| **Datadog** | Webhook | Metrics and events |
-| **Splunk** | Webhook | HEC integration |
-| **PagerDuty** | Webhook | Drift alert incidents |
-| **Opsgenie** | Webhook | Drift detection alerts |
+<table width="100%">
+<thead>
+<tr><th width="22%">Integration</th><th width="18%">Type</th><th width="60%">Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>Datadog</strong></td><td>Webhook</td><td>Metrics and events</td></tr>
+<tr><td><strong>Splunk</strong></td><td>Webhook</td><td>HEC integration</td></tr>
+<tr><td><strong>PagerDuty</strong></td><td>Webhook</td><td>Drift alert incidents</td></tr>
+<tr><td><strong>Opsgenie</strong></td><td>Webhook</td><td>Drift detection alerts</td></tr>
+</tbody>
+</table>
 
 ### Automation
 
-| Platform | Description |
-|----------|-------------|
-| **GitHub Actions** | `check-drift`, `context`, `ingest-pr` |
-| **Zapier** | Connect to 5,000+ apps |
-| **n8n** | Workflow automation node |
-| **Email Digest** | Weekly knowledge summaries |
+<table width="100%">
+<thead>
+<tr><th width="22%">Platform</th><th width="78%">Description</th></tr>
+</thead>
+<tbody>
+<tr><td><strong>GitHub Actions</strong></td><td><code>check-drift</code>, <code>context</code>, <code>ingest-pr</code></td></tr>
+<tr><td><strong>Zapier</strong></td><td>Connect to 5,000+ apps</td></tr>
+<tr><td><strong>n8n</strong></td><td>Workflow automation node</td></tr>
+<tr><td><strong>Email Digest</strong></td><td>Weekly knowledge summaries</td></tr>
+</tbody>
+</table>
 
 All extensions configurable at [app.pekg.ai/settings/extensions](https://app.pekg.ai/settings/extensions)
 
