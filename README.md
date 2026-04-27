@@ -39,44 +39,34 @@ That's it. The agent reads the instructions, installs the plugin, and walks you 
 ## How It Works
 
 ```mermaid
-flowchart TB
-    subgraph Session["Agent Session"]
-        A["Session Start"] --> B["Fetch KB Context"]
-        B --> C["User Prompt"]
-        C --> D["Inject Relevant Knowledge"]
-        D --> E{"Edit File?"}
-        E -->|Yes| F{"Blockers?"}
-        F -->|Yes| G["Gate Until Acknowledged"]
-        F -->|No| H["Allow"]
-        G --> H
-        H --> I["Extract Learnings"]
-        I --> C
+flowchart LR
+    subgraph Agent["🤖 Agent Session"]
+        A["Start"] --> B["Prompt"]
+        B --> C["Edit?"]
+        C -->|Yes| D{"Blocker?"}
+        D -->|Yes| E["Acknowledge"]
+        D -->|No| F["✓ Allow"]
+        E --> F
+        F --> G["Learn"]
+        G --> B
     end
 
-    subgraph Cloud["PeKG Cloud"]
-        J[("Knowledge Graph")]
-        K["Compiler"]
-        L["Entity Extraction"]
+    subgraph PeKG["☁️ PeKG"]
+        H[("Knowledge<br/>Graph")]
     end
 
-    B <-.-> J
-    D <-.-> J
-    I -.-> K
-    K -.-> L
-    L -.-> J
+    A -.->|"fetch"| H
+    B -.->|"inject"| H
+    G -.->|"store"| H
 
-    style A fill:#0d1117,stroke:#58a6ff,color:#58a6ff
-    style B fill:#0d1117,stroke:#58a6ff,color:#58a6ff
-    style C fill:#0d1117,stroke:#58a6ff,color:#58a6ff
-    style D fill:#0d1117,stroke:#58a6ff,color:#58a6ff
-    style E fill:#161b22,stroke:#d29922,color:#d29922
-    style F fill:#161b22,stroke:#f85149,color:#f85149
-    style G fill:#0d1117,stroke:#f85149,color:#f85149
-    style H fill:#0d1117,stroke:#3fb950,color:#3fb950
-    style I fill:#0d1117,stroke:#58a6ff,color:#58a6ff
-    style J fill:#161b22,stroke:#a371f7,color:#a371f7
-    style K fill:#161b22,stroke:#a371f7,color:#a371f7
-    style L fill:#161b22,stroke:#a371f7,color:#a371f7
+    style A fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style B fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style C fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style D fill:#7c2d12,stroke:#f97316,color:#fff
+    style E fill:#7c2d12,stroke:#f97316,color:#fff
+    style F fill:#14532d,stroke:#22c55e,color:#fff
+    style G fill:#1e3a5f,stroke:#3b82f6,color:#fff
+    style H fill:#4c1d95,stroke:#a78bfa,color:#fff
 ```
 
 ### The Loop
