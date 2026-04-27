@@ -2,13 +2,18 @@
 
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.1.67-green.svg)](VERSION)
 
-Cross-project knowledge graph plugins for AI coding agents. Fix a bug once, never hit it again.
+Cross-project knowledge graph for AI coding agents.
 
-[Quick Start](#quick-start) | [Why PeKG](#why-pekg) | [How It Works](#how-it-works) | [Supported Agents](#supported-agents) | [Features](#features)
+- **Solo:** fix a bug once, never hit it again.
+- **Team:** the whole engineering org learns from every fix.
+
+[Quick Start](#quick-start) | [Why PeKG](#why-pekg) | [For Teams](#for-teams--enterprises) | [How It Works](#how-it-works) | [Supported Agents](#supported-agents) | [Features](#features)
 
 ---
 
 ## Quick Start
+
+### Solo
 
 Ask your agent:
 
@@ -18,6 +23,13 @@ Read https://pekg.ai/llms.txt and set up PeKG
 
 That's it. The agent reads the instructions, installs the plugin, and walks you through connecting.
 
+### Team
+
+1. Admin: sign up at [app.pekg.ai](https://app.pekg.ai) — your org is created automatically
+2. Invite teammates from [Settings → Organization](https://app.pekg.ai/settings/org) (SSO config in [Settings → SSO](https://app.pekg.ai/settings/sso))
+3. Each engineer runs the agent install above and signs in
+4. Done. Knowledge promoted to the team pool surfaces in every teammate's session — including new hires from day one
+
 ---
 
 ## Why PeKG
@@ -26,13 +38,39 @@ That's it. The agent reads the instructions, installs the plugin, and walks you 
 
 **The solution:** PeKG builds a personal knowledge graph from your work. When you encounter something worth remembering, it gets captured. When you're about to hit a known issue, you get warned before wasting time.
 
-| Feature | PeKG | Other tools |
-|---------|------|-------------|
-| Cross-project learning | Yes | No (per-project only) |
-| Blocker enforcement | Yes | No |
-| BYOLLM (your tokens) | Yes | Uses their LLM |
-| Knowledge graph | Yes | Flat logs |
-| Community patterns | Yes (Hive) | No |
+---
+
+## For Teams & Enterprises
+
+When one engineer learns something the hard way, the whole team gets it for free.
+
+### Shared Knowledge, Three Tiers
+
+| Tier | Visibility | Use case |
+|------|------------|----------|
+| **Private** | You only | Personal patterns, work-in-progress |
+| **Team Pool** | Your org | Deploy gotchas, internal conventions, post-mortems |
+| **Hive** (opt-in) | Public community | Generic patterns worth sharing back |
+
+You choose what gets promoted. Selective sharing means a `prod deploy` blocker goes to the team; a generic `JWT clock skew` pattern can go to Hive. Nothing leaves your org without an explicit promote.
+
+### Newcomer Onboarding in Minutes
+
+A new hire connects their agent to your org's PeKG. From the first prompt:
+
+- Your team's blockers fire on their machine
+- "How does X service work?" surfaces decisions your seniors made 6 months ago
+- They stop pinging Slack for context that already lives in the graph
+
+No tribal knowledge silos. The graph is the onboarding doc.
+
+### Enterprise
+
+- **SSO** — OIDC / SAML
+- **Audit log export**
+- **Federated search** across team pools
+- **Unlimited** sources, articles, entities, users, projects
+- **Dedicated support**
 
 ---
 
@@ -40,18 +78,18 @@ That's it. The agent reads the instructions, installs the plugin, and walks you 
 
 ```mermaid
 flowchart LR
-    subgraph Agent["🤖 Agent Session"]
+    subgraph Agent["Agent Session"]
         A["Start"] --> B["Prompt"]
         B --> C["Edit?"]
         C -->|Yes| D{"Blocker?"}
         D -->|Yes| E["Acknowledge"]
-        D -->|No| F["✓ Allow"]
+        D -->|No| F["Allow"]
         E --> F
         F --> G["Learn"]
         G --> B
     end
 
-    subgraph PeKG["☁️ PeKG"]
+    subgraph PeKG["PeKG Cloud"]
         H[("Knowledge<br/>Graph")]
     end
 
