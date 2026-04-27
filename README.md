@@ -104,16 +104,36 @@ File-editing tools (`edit`, `write`, `apply_patch`, etc.) are gated until you ac
 
 ## Supported Agents & Extensions
 
-| Platform | Type | Install |
-|----------|------|---------|
+### AI Coding Agents
+
+| Agent | Type | Install |
+|-------|------|---------|
 | **OpenCode** | TypeScript plugin | `curl -o ~/.config/opencode/plugins/pekg.ts https://api.pekg.ai/plugins/opencode.ts` |
 | **Claude Code** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/claude-code/install.sh \| bash` |
 | **Codex** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/codex/install.sh \| bash` |
 | **Cursor / Windsurf** | MCP server | Via `llms.txt` |
-| **VS Code** | Extension | [Download .vsix](https://app.pekg.ai/downloads/pekg-vscode-0.1.0.vsix) |
-| **JetBrains** | Plugin | [Download .zip](https://app.pekg.ai/downloads/pekg-jetbrains-0.1.0.zip) |
-| **Obsidian** | Plugin | [Download .zip](https://app.pekg.ai/downloads/pekg-obsidian-0.1.0.zip) |
-| **Raycast** | Extension | [Download .zip](https://app.pekg.ai/downloads/pekg-raycast-0.1.0.zip) |
+
+### IDE Extensions
+
+| IDE | Download |
+|-----|----------|
+| **VS Code** | [pekg-vscode-0.1.0.vsix](https://app.pekg.ai/downloads/pekg-vscode-0.1.0.vsix) |
+| **JetBrains** | [pekg-jetbrains-0.1.0.zip](https://app.pekg.ai/downloads/pekg-jetbrains-0.1.0.zip) |
+
+### Productivity Tools
+
+| Tool | Download |
+|------|----------|
+| **Obsidian** | [pekg-obsidian-0.1.0.zip](https://app.pekg.ai/downloads/pekg-obsidian-0.1.0.zip) |
+| **Raycast** | [pekg-raycast-0.1.0.zip](https://app.pekg.ai/downloads/pekg-raycast-0.1.0.zip) |
+
+### Automation & CI/CD
+
+| Platform | Description |
+|----------|-------------|
+| **GitHub Actions** | `check-drift`, `context`, `ingest-pr` actions for CI/CD |
+| **Zapier** | Connect PeKG to 5,000+ apps |
+| **n8n** | Community node for workflow automation |
 
 Or just ask any agent to read `https://pekg.ai/llms.txt`.
 
