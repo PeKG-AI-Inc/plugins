@@ -64,11 +64,9 @@ main() {
   result=$(pekg_post_json "/api/v1/context-lookup" "$payload" 3 2>/dev/null || true)
 
   if [ -z "$result" ]; then
-    local cur task blockers
-    cur=$(pekg_state_read "$session_id" 2>/dev/null || true)
-    task=$(printf '%s' "${cur:-{}}" | jq -c '.task // {}')
-    blockers=$(pekg_synth_network_blocker)
-    pekg_state_write "$session_id" "$task" "$blockers" || true
+    # A48 revised: fail-open on network error. Don't persist a NETWORK_BLOCKER
+    # that gates edits. Just exit silently so the agent can keep working.
+    # Context enrichment is lost this turn, but the agent isn't blocked.
     exit 0
   fi
 

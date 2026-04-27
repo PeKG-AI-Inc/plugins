@@ -2579,19 +2579,11 @@ NOT reusable: refactoring, renaming, formatting, project-specific logic.
         fetchGuaranteedBlocks(config.token, projectOrigin),
       ]);
 
-      // fail-closed: on network error, install a synthetic blocker that gates edits
-      // until PeKG is reachable again. Override with PEKG_OFFLINE=1.
-      if (result.status === "network_error" && !PEKG_OFFLINE && sessionID) {
-        const existing = activeBlockers.get(sessionID);
-        if (!existing || existing.blockers.every((b) => b.articleId !== NETWORK_BLOCKER_ID)) {
-          activeBlockers.set(sessionID, {
-            blockers: [NETWORK_BLOCKER_ARTICLE],
-            acknowledged: false,
-            verificationPending: false,
-          });
-          persistBlockerState(sessionID);
-        }
-      }
+      // A48 revised: fail-open on network error. Don't install a NETWORK_BLOCKER
+      // that gates edits — just skip context enrichment this turn.
+      // The agent loses KB context but can keep working. Override with PEKG_OFFLINE=1
+      // to suppress all PeKG features proactively.
+      // (Old fail-closed behavior removed: it caused deadlocks when API unreachable)
 
       // when the fetch succeeds, drop any stale network blocker.
       if (result.status === "ok" && sessionID) {
