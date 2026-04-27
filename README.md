@@ -1,6 +1,6 @@
 # <img src="https://pekg.ai/favicon.png" alt="PeKG" height="32"> PeKG Plugins
 
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.1.67-green.svg)](VERSION)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-0.1.70-green.svg)](VERSION)
 
 Cross-project knowledge graph for AI coding agents.
 
