@@ -102,15 +102,18 @@ File-editing tools (`edit`, `write`, `apply_patch`, etc.) are gated until you ac
 
 ---
 
-## Supported Agents
+## Supported Agents & Extensions
 
-| Agent | Type | Install |
-|-------|------|---------|
+| Platform | Type | Install |
+|----------|------|---------|
 | **OpenCode** | TypeScript plugin | `curl -o ~/.config/opencode/plugins/pekg.ts https://api.pekg.ai/plugins/opencode.ts` |
 | **Claude Code** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/claude-code/install.sh \| bash` |
 | **Codex** | Bash hooks | `curl -fsSL https://api.pekg.ai/plugins/codex/install.sh \| bash` |
 | **Cursor / Windsurf** | MCP server | Via `llms.txt` |
-| **VS Code / JetBrains** | Extensions | Coming soon |
+| **VS Code** | Extension | [Download .vsix](https://app.pekg.ai/downloads/pekg-vscode-0.1.0.vsix) |
+| **JetBrains** | Plugin | [Download .zip](https://app.pekg.ai/downloads/pekg-jetbrains-0.1.0.zip) |
+| **Obsidian** | Plugin | [Download .zip](https://app.pekg.ai/downloads/pekg-obsidian-0.1.0.zip) |
+| **Raycast** | Extension | [Download .zip](https://app.pekg.ai/downloads/pekg-raycast-0.1.0.zip) |
 
 Or just ask any agent to read `https://pekg.ai/llms.txt`.
 
