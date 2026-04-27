@@ -173,6 +173,36 @@ Context survives between sessions. When you resume with `--continue` or reconnec
 
 Stored locally at `~/.pekg/sessions/` and rehydrated on session start.
 
+### Flash Compaction
+
+Zero-cost context compaction that eliminates LLM summarization overhead:
+
+- **No LLM call** — Replaces 15K token summarization with pre-computed structured state
+- **Instant** — Saves 30-120s per compaction vs default LLM summary
+- **Smart state** — Preserves current task, active files, failed approaches, blockers
+- **Always-on** — No fallback to slow summarization, even on empty sessions
+
+When context window fills, the plugin injects a structured prompt instead of asking the LLM to summarize:
+
+```
+## Current Task
+Fix authentication bug in login flow
+
+## Files
+- src/auth/login.ts (modified)
+- src/utils/token.ts (read)
+
+## Approaches Already Tried (avoid repeating)
+- Tried increasing token expiry - didn't help
+- Checked Redis connection - was fine
+
+## ACTIVE BLOCKERS
+- [a1b2c3d4] JWT Gotcha: Clock skew causes validation failures
+
+## Instructions
+Continue the task. Address blockers first. Avoid failed approaches.
+```
+
 ### Knowledge Capture
 
 - **Automatic extraction** — Patterns, gotchas, decisions captured from your work
