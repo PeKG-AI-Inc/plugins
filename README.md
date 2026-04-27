@@ -162,6 +162,17 @@ Or just ask any agent to read `https://pekg.ai/llms.txt`.
 
 ## Features
 
+### Session Persistence
+
+Context survives between sessions. When you resume with `--continue` or reconnect:
+
+- **Task state** — Current task, completed steps, failed approaches
+- **File tracking** — Files read, modified, discovered
+- **Blockers** — Active blockers persist until acknowledged
+- **Automatic cleanup** — Stale sessions expire after 24h
+
+Stored locally at `~/.pekg/sessions/` and rehydrated on session start.
+
 ### Knowledge Capture
 
 - **Automatic extraction** — Patterns, gotchas, decisions captured from your work
