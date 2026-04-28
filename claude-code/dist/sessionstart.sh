@@ -1,7 +1,310 @@
 #!/usr/bin/env bash
-# PeKG blocker enforcement (A5b, A8, A48 NETWORK_BLOCKER, A59 clearance semantics,
-# A30 deterministic ack heuristic). Source after config.sh, fetch.sh, state.sh.
+# PeKG SessionStart hook for Claude Code.
+# Abilities: A7a rehydrate, A37/A50 KB health line, A45 token-rotation prompt,
+#           A46 init bootstrap, A48 NETWORK_BLOCKER lifecycle, A38 cleanup.
 
+set -o pipefail
+
+PEKG_PLUGIN_VERSION="0.1.87"
+PEKG_UA_PRODUCT="claude-code-pekg-plugin"
+
+# --- inlined from shared/lib/config.sh ---
+pekg_load_config() {
+  PEKG_TOKEN=""
+  if [ -n "${PEKG_TOKEN_OVERRIDE:-}" ]; then
+    PEKG_TOKEN="$PEKG_TOKEN_OVERRIDE"
+    return 0
+  fi
+  if [ -f "$HOME/.pekg/config.json" ]; then
+    PEKG_TOKEN=$(jq -r '.token // empty' "$HOME/.pekg/config.json" 2>/dev/null || true)
+  fi
+  export PEKG_TOKEN
+}
+
+# A16b: Project-origin detection via git rev-parse + cwd basename fallback.
+# Cached per-process via PEKG_PROJECT_ORIGIN env. Caller passes desired cwd.
+pekg_project_origin() {
+  local cwd="${1:-$PWD}"
+  if [ -n "${PEKG_PROJECT_ORIGIN:-}" ]; then
+    printf '%s' "$PEKG_PROJECT_ORIGIN"
+    return 0
+  fi
+  local git_root
+  git_root=$(cd "$cwd" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)
+  if [ -n "$git_root" ]; then
+    PEKG_PROJECT_ORIGIN=$(basename "$git_root")
+  else
+    PEKG_PROJECT_ORIGIN=$(basename "$cwd")
+  fi
+  export PEKG_PROJECT_ORIGIN
+  printf '%s' "$PEKG_PROJECT_ORIGIN"
+}
+
+# A16c: User-Agent stamping. Each adapter overrides PEKG_UA_PRODUCT.
+pekg_ua() {
+  local product="${PEKG_UA_PRODUCT:-pekg-plugin}"
+  local version="${PEKG_PLUGIN_VERSION:-0.0.0}"
+  printf '%s/%s' "$product" "$version"
+}
+
+# A16d / A70: PEKG_OFFLINE early-bailout check.
+pekg_offline() {
+  [ "${PEKG_OFFLINE:-}" = "1" ]
+}
+
+# A60: Honor PEKG_FULL_CONTEXT_EVERY_TURN env override.
+pekg_full_context_every_turn() {
+  [ "${PEKG_FULL_CONTEXT_EVERY_TURN:-}" = "1" ]
+}
+# --- end inline ---
+# --- inlined from shared/lib/fetch.sh ---
+PEKG_API_BASE="${PEKG_API_BASE:-https://api.pekg.ai}"
+PEKG_DEFAULT_TIMEOUT="${PEKG_DEFAULT_TIMEOUT:-5}"
+
+# A70: Offline mode short-circuits to "no result, no blocker."
+# A49: AbortSignal-equivalent via curl --max-time.
+pekg_fetch() {
+  # Args: METHOD PATH [JSON_BODY] [TIMEOUT_SECONDS]
+  local method="$1"
+  local path="$2"
+  local body="${3:-}"
+  local timeout="${4:-$PEKG_DEFAULT_TIMEOUT}"
+
+  if pekg_offline; then
+    return 1
+  fi
+  if [ -z "${PEKG_TOKEN:-}" ]; then
+    return 1
+  fi
+
+  local ua
+  ua=$(pekg_ua)
+  local url="${PEKG_API_BASE}${path}"
+
+  if [ -n "$body" ]; then
+    curl -sS --max-time "$timeout" -X "$method" \
+      -H "Authorization: Bearer $PEKG_TOKEN" \
+      -H "Content-Type: application/json" \
+      -H "User-Agent: $ua" \
+      --fail-with-body \
+      -d "$body" \
+      "$url" 2>/dev/null
+  else
+    curl -sS --max-time "$timeout" -X "$method" \
+      -H "Authorization: Bearer $PEKG_TOKEN" \
+      -H "User-Agent: $ua" \
+      --fail-with-body \
+      "$url" 2>/dev/null
+  fi
+}
+
+# Convenience: GET with default timeout.
+pekg_get() {
+  pekg_fetch GET "$1" "" "${2:-$PEKG_DEFAULT_TIMEOUT}"
+}
+
+# Convenience: POST JSON.
+pekg_post_json() {
+  pekg_fetch POST "$1" "$2" "${3:-$PEKG_DEFAULT_TIMEOUT}"
+}
+# --- end inline ---
+# --- inlined from shared/lib/state.sh ---
+PEKG_SESSION_DIR="$HOME/.pekg/sessions"
+PEKG_SESSION_TTL_DAYS="${PEKG_SESSION_TTL_DAYS:-7}"
+PEKG_SESSION_MAX_FILES="${PEKG_SESSION_MAX_FILES:-100}"
+# Per-blocker TTL — drop entries with firstSeenAt older than this on read.
+# Stops a single blocker from gating an active session indefinitely. New
+# blockers reset the clock; addressed-then-irrelevant blockers self-clear
+# within an hour without needing an explicit ack signal.
+PEKG_BLOCKER_TTL_SECS="${PEKG_BLOCKER_TTL_SECS:-3600}"
+
+pekg_state_path() {
+  local sid="$1"
+  # Sanitize for filesystem.
+  sid=$(printf '%s' "$sid" | tr -c 'a-zA-Z0-9_-' '_')
+  printf '%s/%s.json' "$PEKG_SESSION_DIR" "$sid"
+}
+
+# A49 lazy mkdir.
+pekg_state_ensure_dir() {
+  mkdir -p "$PEKG_SESSION_DIR" 2>/dev/null || true
+  chmod 700 "$PEKG_SESSION_DIR" 2>/dev/null || true
+}
+
+# A14 + A98: read state, honoring TTL. Returns "" if expired or missing.
+# Per-blocker TTL filter: blockers with firstSeenAt older than
+# PEKG_BLOCKER_TTL_SECS are dropped on read. Legacy entries without
+# firstSeenAt fall back to the envelope timestamp so they don't deadlock
+# forever after the upgrade.
+pekg_state_read() {
+  local sid="$1"
+  local path
+  path=$(pekg_state_path "$sid")
+  [ -f "$path" ] || return 0
+
+  local now expires
+  now=$(date +%s)
+  expires=$(jq -r '.expiresAt // 0' "$path" 2>/dev/null || echo 0)
+  # expiresAt is unix-seconds; if 0, treat as legacy and write fresh.
+  if [ "$expires" -gt 0 ] && [ "$expires" -lt "$now" ]; then
+    rm -f "$path" 2>/dev/null || true
+    return 0
+  fi
+
+  local cutoff=$((now - PEKG_BLOCKER_TTL_SECS))
+  jq --argjson cutoff "$cutoff" '
+    if has("blockers") and (.blockers | type) == "array" then
+      # Only filter blockers that have an explicit firstSeenAt older than the
+      # cutoff. Legacy / fixture entries without the field pass through
+      # untouched — pekg_state_write will stamp them on the next persist.
+      .blockers |= map(select(.firstSeenAt == null or .firstSeenAt >= $cutoff))
+    else . end
+  ' "$path" 2>/dev/null || cat "$path" 2>/dev/null
+}
+
+# A14 single-writer envelope.
+# Args: sessionId, taskJson (object), blockersJson (array of {id,title,recommendation}).
+# Each blocker gets a firstSeenAt stamp on first write; subsequent writes
+# preserve the original stamp for blocker IDs that are still present, so the
+# TTL clock measures "how long has THIS blocker been hanging around" rather
+# than "how long since the last write."
+#
+# ackedBlockers (in-turn ack persistence) is preserved transparently — if a
+# prior state had ackedBlockers and the caller doesn't supply a fresh map,
+# we keep the existing one. Use pekg_state_write_with_acked to overwrite.
+pekg_state_write() {
+  local sid="$1"
+  local task_json="${2:-{\}}"
+  local blockers_json="${3:-[]}"
+
+  local prior_acked="{}" prior_denials="{}"
+  local path
+  path=$(pekg_state_path "$sid")
+  if [ -f "$path" ]; then
+    prior_acked=$(jq -c '.ackedBlockers // {}' "$path" 2>/dev/null || echo '{}')
+    prior_denials=$(jq -c '.denialCounts // {}' "$path" 2>/dev/null || echo '{}')
+  fi
+  pekg_state_write_full "$sid" "$task_json" "$blockers_json" "$prior_acked" "$prior_denials"
+}
+
+# Compat wrapper: persist envelope with explicit ackedBlockers map; preserves
+# prior denialCounts.
+pekg_state_write_with_acked() {
+  local sid="$1"
+  local task_json="${2:-{\}}"
+  local blockers_json="${3:-[]}"
+  local acked_json="${4:-{\}}"
+
+  local prior_denials="{}"
+  local path
+  path=$(pekg_state_path "$sid")
+  if [ -f "$path" ]; then
+    prior_denials=$(jq -c '.denialCounts // {}' "$path" 2>/dev/null || echo '{}')
+  fi
+  pekg_state_write_full "$sid" "$task_json" "$blockers_json" "$acked_json" "$prior_denials"
+}
+
+# Full envelope writer including denialCounts (per-blocker consecutive-deny
+# counter for the loop-bound safety net — see pekg_record_denial_and_maybe_force_ack).
+pekg_state_write_full() {
+  local sid="$1"
+  local task_json="${2:-{\}}"
+  local blockers_json="${3:-[]}"
+  local acked_json="${4:-{\}}"
+  local denials_json="${5:-{\}}"
+
+  pekg_state_ensure_dir
+  local path
+  path=$(pekg_state_path "$sid")
+
+  local now expires_at
+  now=$(date +%s)
+  expires_at=$(( now + PEKG_SESSION_TTL_DAYS * 86400 ))
+
+  local prior_blockers="[]"
+  if [ -f "$path" ]; then
+    prior_blockers=$(jq -c '.blockers // []' "$path" 2>/dev/null || echo '[]')
+  fi
+
+  local stamped_blockers
+  stamped_blockers=$(jq -n \
+    --argjson fresh "$blockers_json" \
+    --argjson prior "$prior_blockers" \
+    --argjson now "$now" '
+    ($prior | map(select(.id != null and .firstSeenAt != null)
+                  | {(.id|tostring): .firstSeenAt})
+            | add // {}) as $first_seen |
+    $fresh | map(. + {firstSeenAt: ($first_seen[(.id // "")|tostring] // $now)})
+  ' 2>/dev/null) || stamped_blockers="$blockers_json"
+
+  # Prune ackedBlockers entries whose ts is older than 2× cooldown window
+  # so this map doesn't grow unbounded across long-lived sessions.
+  local prune_cutoff=$(( now - 2 * ${PEKG_BLOCKER_ACK_COOLDOWN_SECS:-600} ))
+  local pruned_acked
+  pruned_acked=$(printf '%s' "$acked_json" | jq -c --argjson c "$prune_cutoff" '
+    with_entries(select(.value >= $c))
+  ' 2>/dev/null) || pruned_acked="$acked_json"
+
+  # Prune denialCounts to only IDs still present in current blockers — a
+  # blocker that's no longer active doesn't need its counter persisted.
+  local pruned_denials
+  pruned_denials=$(jq -n \
+    --argjson denials "$denials_json" \
+    --argjson blockers "$stamped_blockers" '
+    ($blockers | map(.id // "" | tostring) | map(select(length > 0))) as $ids |
+    $denials | with_entries(select(.key | IN($ids[])))
+  ' 2>/dev/null) || pruned_denials="$denials_json"
+
+  local tmp="${path}.tmp.$$"
+  jq -n \
+    --argjson task "$task_json" \
+    --argjson blockers "$stamped_blockers" \
+    --argjson acked "$pruned_acked" \
+    --argjson denials "$pruned_denials" \
+    --arg ts "$now" \
+    --arg exp "$expires_at" \
+    '{
+      task: $task,
+      blockers: $blockers,
+      ackedBlockers: $acked,
+      denialCounts: $denials,
+      timestamp: ($ts | tonumber),
+      expiresAt: ($exp | tonumber)
+    }' > "$tmp" 2>/dev/null || return 1
+
+  mv "$tmp" "$path" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# A38 lazy cleanup, max once per hour.
+pekg_state_cleanup() {
+  local marker="$HOME/.pekg/.last-cleanup"
+  local now last
+  now=$(date +%s)
+  last=0
+  [ -f "$marker" ] && last=$(cat "$marker" 2>/dev/null || echo 0)
+  if [ $((now - last)) -lt 3600 ]; then
+    return 0
+  fi
+  printf '%s' "$now" > "$marker"
+
+  # Delete files older than TTL (mtime-based fallback if file lacks expiresAt).
+  find "$PEKG_SESSION_DIR" -maxdepth 1 -type f -name '*.json' \
+    -mtime +"$PEKG_SESSION_TTL_DAYS" -delete 2>/dev/null || true
+
+  # A79: cap at max files by mtime ascending eviction.
+  local count
+  count=$(find "$PEKG_SESSION_DIR" -maxdepth 1 -type f -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$count" -gt "$PEKG_SESSION_MAX_FILES" ]; then
+    local excess=$((count - PEKG_SESSION_MAX_FILES))
+    find "$PEKG_SESSION_DIR" -maxdepth 1 -type f -name '*.json' -print0 2>/dev/null \
+      | xargs -0 ls -tr 2>/dev/null \
+      | head -n "$excess" \
+      | xargs rm -f 2>/dev/null || true
+  fi
+}
+# --- end inline ---
+# --- inlined from shared/lib/blockers.sh ---
 PEKG_NETWORK_BLOCKER_ID="00000000-0000-0000-0000-pekgNetworkErr"
 
 # A48: synthesize a NETWORK_BLOCKER for inclusion in state when API unreachable.
@@ -555,3 +858,329 @@ pekg_redirect_targets_workspace() {
   done <<< "$targets"
   return 1
 }
+# --- end inline ---
+# --- inlined from shared/lib/update.sh ---
+PEKG_UPDATE_INTERVAL_S="${PEKG_UPDATE_INTERVAL_S:-3600}"
+PEKG_UPDATE_MARKER="$HOME/.pekg/plugin-update-check.json"
+
+# pekg_maybe_update <target> <hooks-dir>
+# target: claude-code | codex
+# hooks-dir: e.g. ~/.pekg/hooks
+pekg_maybe_update() {
+  local target="$1"
+  local hooks_dir="$2"
+
+  pekg_offline && return 0
+
+  local now last
+  now=$(date +%s)
+  last=0
+  if [ -f "$PEKG_UPDATE_MARKER" ]; then
+    last=$(jq -r --arg k "${target}_lastCheck" '.[$k] // 0' "$PEKG_UPDATE_MARKER" 2>/dev/null || echo 0)
+  fi
+  if [ $((now - last)) -lt "$PEKG_UPDATE_INTERVAL_S" ]; then
+    return 0
+  fi
+
+  local manifest
+  manifest=$(curl -sf --max-time 5 \
+    -H "User-Agent: $(pekg_ua)" \
+    "$PEKG_API_BASE/plugins/${target}.json" 2>/dev/null || true)
+
+  # Persist last-check timestamp regardless of fetch result.
+  pekg_update_marker_set "${target}_lastCheck" "$now"
+
+  [ -z "$manifest" ] && return 0
+
+  local current_version remote_version files
+  current_version="${PEKG_PLUGIN_VERSION:-0.0.0}"
+  remote_version=$(printf '%s' "$manifest" | jq -r '.version // empty')
+  [ -z "$remote_version" ] && return 0
+  if [ "$remote_version" = "$current_version" ]; then
+    return 0
+  fi
+
+  # Files: { "<basename>": "<sha256>", ... } or array of {name,url,sha256}.
+  files=$(printf '%s' "$manifest" | jq -c '.files // []')
+  [ "$files" = "[]" ] && return 0
+
+  mkdir -p "$hooks_dir"
+  local count i
+  count=$(printf '%s' "$files" | jq 'length' 2>/dev/null || echo 0)
+  for ((i=0; i<count; i++)); do
+    local entry name url
+    entry=$(printf '%s' "$files" | jq -c ".[$i]")
+    name=$(printf '%s' "$entry" | jq -r '.name // empty')
+    url=$(printf '%s' "$entry" | jq -r '.url // empty')
+    [ -z "$name" ] || [ -z "$url" ] && continue
+
+    local tmp dest
+    tmp="${hooks_dir}/.${name}.tmp.$$"
+    dest="${hooks_dir}/${name}"
+    if curl -sf --max-time 10 -H "User-Agent: $(pekg_ua)" -o "$tmp" "$url" 2>/dev/null; then
+      # Sanity: must be a non-empty file.
+      if [ -s "$tmp" ]; then
+        chmod +x "$tmp"
+        mv "$tmp" "$dest"
+      else
+        rm -f "$tmp"
+      fi
+    else
+      rm -f "$tmp"
+    fi
+  done
+
+  pekg_update_marker_set "${target}_lastVersion" "$remote_version"
+  # A2d: surface a one-time notice on next session indicating an update was
+  # downloaded. SessionStart reads + clears.
+  printf 'PeKG plugin updated from %s to %s — restart your CLI for changes.' \
+    "$current_version" "$remote_version" \
+    > "$HOME/.pekg/.update-notice" 2>/dev/null
+}
+
+pekg_update_marker_set() {
+  local key="$1" val="$2"
+  mkdir -p "$(dirname "$PEKG_UPDATE_MARKER")"
+  local cur='{}'
+  [ -f "$PEKG_UPDATE_MARKER" ] && cur=$(cat "$PEKG_UPDATE_MARKER" 2>/dev/null || echo '{}')
+  printf '%s' "$cur" | jq --arg k "$key" --arg v "$val" '.[$k] = $v' > "${PEKG_UPDATE_MARKER}.tmp" \
+    && mv "${PEKG_UPDATE_MARKER}.tmp" "$PEKG_UPDATE_MARKER"
+}
+# --- end inline ---
+# --- inlined from shared/lib/feedback.sh ---
+PEKG_FEEDBACK_QUEUE_DIR="$HOME/.pekg/feedback-queue"
+PEKG_FEEDBACK_REPLAY_MAX="${PEKG_FEEDBACK_REPLAY_MAX:-10}"
+PEKG_FEEDBACK_COOLDOWN_FILE="$HOME/.pekg/.feedback-cooldown.json"
+PEKG_FEEDBACK_COOLDOWN_S="${PEKG_FEEDBACK_COOLDOWN_S:-30}"
+PEKG_SHOWN_ARTICLES_FILE="$HOME/.pekg/.shown-articles.json"
+PEKG_SHOWN_ARTICLES_TTL_S="${PEKG_SHOWN_ARTICLES_TTL_S:-3600}"
+
+# A31a: per-article feedback cooldown. Returns 0 if allowed, 1 if cooled-down.
+pekg_feedback_check_cooldown() {
+  local article_id="$1"
+  [ -z "$article_id" ] && return 0
+  [ -f "$PEKG_FEEDBACK_COOLDOWN_FILE" ] || return 0
+  local now last
+  now=$(date +%s)
+  last=$(jq -r --arg id "$article_id" '.[$id] // 0' "$PEKG_FEEDBACK_COOLDOWN_FILE" 2>/dev/null || echo 0)
+  [ $((now - last)) -lt "$PEKG_FEEDBACK_COOLDOWN_S" ] && return 1
+  return 0
+}
+
+pekg_feedback_record_cooldown() {
+  local article_id="$1"
+  [ -z "$article_id" ] && return 0
+  mkdir -p "$(dirname "$PEKG_FEEDBACK_COOLDOWN_FILE")" 2>/dev/null
+  local now cur
+  now=$(date +%s)
+  cur='{}'
+  [ -f "$PEKG_FEEDBACK_COOLDOWN_FILE" ] && cur=$(cat "$PEKG_FEEDBACK_COOLDOWN_FILE" 2>/dev/null || echo '{}')
+  # Also opportunistically prune entries older than 1h.
+  printf '%s' "$cur" | jq --arg id "$article_id" --arg now "$now" --arg ttl "3600" \
+    '. + {($id): ($now | tonumber)} | with_entries(select(.value > (($now | tonumber) - ($ttl | tonumber))))' \
+    > "${PEKG_FEEDBACK_COOLDOWN_FILE}.tmp" && mv "${PEKG_FEEDBACK_COOLDOWN_FILE}.tmp" "$PEKG_FEEDBACK_COOLDOWN_FILE"
+}
+
+# A31b: shown-articles tracking with TTL cleanup.
+pekg_shown_record() {
+  local sid="$1"
+  shift
+  local article_ids="$*"   # space-separated
+  [ -z "$article_ids" ] && return 0
+  mkdir -p "$(dirname "$PEKG_SHOWN_ARTICLES_FILE")" 2>/dev/null
+  local now cur
+  now=$(date +%s)
+  cur='{}'
+  [ -f "$PEKG_SHOWN_ARTICLES_FILE" ] && cur=$(cat "$PEKG_SHOWN_ARTICLES_FILE" 2>/dev/null || echo '{}')
+  local ids_json
+  ids_json=$(printf '%s\n' $article_ids | jq -R -s -c 'split("\n") | map(select(length > 0))')
+  # Add new ids to session bucket; prune buckets older than TTL.
+  printf '%s' "$cur" | jq --arg sid "$sid" --argjson new "$ids_json" --arg now "$now" --arg ttl "$PEKG_SHOWN_ARTICLES_TTL_S" \
+    '
+      .[$sid] = (
+        (.[$sid] // {articles: [], timestamp: ($now | tonumber)})
+        | .articles = ((.articles + $new) | unique)
+        | .timestamp = ($now | tonumber)
+      )
+      | with_entries(select(.value.timestamp > (($now | tonumber) - ($ttl | tonumber))))
+    ' > "${PEKG_SHOWN_ARTICLES_FILE}.tmp" && mv "${PEKG_SHOWN_ARTICLES_FILE}.tmp" "$PEKG_SHOWN_ARTICLES_FILE"
+}
+
+pekg_shown_check() {
+  local sid="$1" article_id="$2"
+  [ -f "$PEKG_SHOWN_ARTICLES_FILE" ] || return 1
+  local found
+  found=$(jq -r --arg sid "$sid" --arg id "$article_id" \
+    '(.[$sid].articles // []) | index($id) // empty' "$PEKG_SHOWN_ARTICLES_FILE" 2>/dev/null)
+  [ -n "$found" ]
+}
+
+# pekg_feedback_submit <article-id> <signal> <context-json-or-empty>
+# Tries POST /api/v1/feedback; on failure, queues for later replay.
+pekg_feedback_submit() {
+  local article_id="$1" signal="$2" ctx="${3:-{\}}"
+  [ -z "$article_id" ] && return 1
+
+  # A31a: skip if within per-article cooldown window.
+  pekg_feedback_check_cooldown "$article_id" || return 0
+
+  local payload
+  payload=$(jq -n --arg id "$article_id" --arg s "$signal" --argjson c "$ctx" \
+    '{articleId: $id, signal: $s, context: $c}')
+
+  if pekg_offline; then
+    pekg_feedback_queue "$payload"
+    pekg_feedback_record_cooldown "$article_id"
+    return 0
+  fi
+
+  if pekg_post_json "/api/v1/feedback" "$payload" 3 >/dev/null 2>&1; then
+    pekg_feedback_record_cooldown "$article_id"
+    return 0
+  fi
+  pekg_feedback_queue "$payload"
+  pekg_feedback_record_cooldown "$article_id"
+}
+
+pekg_feedback_queue() {
+  local payload="$1"
+  mkdir -p "$PEKG_FEEDBACK_QUEUE_DIR" 2>/dev/null || true
+  chmod 700 "$PEKG_FEEDBACK_QUEUE_DIR" 2>/dev/null || true
+  local fname="$(date +%s)-$$-$RANDOM.json"
+  printf '%s' "$payload" > "$PEKG_FEEDBACK_QUEUE_DIR/$fname"
+}
+
+# Replay up to N queued feedback items. Called from SessionStart on success path.
+pekg_feedback_replay() {
+  [ -d "$PEKG_FEEDBACK_QUEUE_DIR" ] || return 0
+  pekg_offline && return 0
+  local count=0
+  for fb_file in "$PEKG_FEEDBACK_QUEUE_DIR"/*.json; do
+    [ -f "$fb_file" ] || continue
+    [ "$count" -ge "$PEKG_FEEDBACK_REPLAY_MAX" ] && break
+    local body
+    body=$(cat "$fb_file" 2>/dev/null || true)
+    [ -z "$body" ] && { rm -f "$fb_file"; continue; }
+    if pekg_post_json "/api/v1/feedback" "$body" 3 >/dev/null 2>&1; then
+      rm -f "$fb_file"
+    fi
+    count=$((count + 1))
+  done
+}
+# --- end inline ---
+
+main() {
+  pekg_load_config
+
+  local input session_id
+  input=$(cat 2>/dev/null || true)
+  session_id=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)
+
+  if [ -z "$PEKG_TOKEN" ]; then
+    jq -n '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:"pekg: not connected — run /pekg-connect to set up"}}'
+    return 0
+  fi
+
+  # A7a + A14 + A98: rehydrate persisted state for --continue.
+  if [ -n "$session_id" ]; then
+    pekg_state_read "$session_id" >/dev/null 2>&1 || true
+  fi
+  pekg_state_cleanup &  # A38 background cleanup, max 1x/hour
+
+  # A13: self-update check (max 1x/hour). Backgrounded, fire-and-forget.
+  ( pekg_maybe_update "claude-code" "$HOME/.pekg/hooks" >/dev/null 2>&1 ) &
+  disown 2>/dev/null || true
+
+  # A32: replay queued feedback from prior offline / failed runs.
+  ( pekg_feedback_replay >/dev/null 2>&1 ) &
+  disown 2>/dev/null || true
+
+  # A37/A50: dashboard stats fetch.
+  local stats
+  stats=$(pekg_get "/api/v1/dashboard/stats" 3 2>/dev/null || true)
+
+  if [ -z "$stats" ]; then
+    # A48 revised (2026-04-27): fail-open. Mirrors userpromptsubmit's behavior
+    # — a transient API error must not gate edits for the rest of the session.
+    # Strip any stale NETWORK_BLOCKER from prior persistence so the gate hook
+    # doesn't read a leftover entry.
+    if [ -n "$session_id" ]; then
+      local cur task blockers cleaned
+      cur=$(pekg_state_read "$session_id" 2>/dev/null || true)
+      if [ -n "$cur" ]; then
+        task=$(printf '%s' "$cur" | jq -c '.task // {}')
+        blockers=$(printf '%s' "$cur" | jq -c '.blockers // []')
+        cleaned=$(pekg_strip_network_blocker "$blockers")
+        pekg_state_write "$session_id" "$task" "$cleaned" || true
+      fi
+    fi
+    local offline_msg
+    if pekg_offline; then
+      offline_msg="pekg: offline mode (PEKG_OFFLINE=1) — context disabled this session"
+    else
+      offline_msg="pekg: api unreachable — context disabled this session, edits not gated"
+    fi
+    # A45 + A2d markers should surface even on offline path.
+    pekg_append_pending_markers offline_msg
+    jq -n --arg m "$offline_msg" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$m}}'
+    return 0
+  fi
+
+  local articles pending health actions msg
+  articles=$(printf '%s' "$stats" | jq -r '.articleCount // 0')
+  pending=$(printf '%s' "$stats" | jq -r '.pendingClusters // 0')
+  health=$(printf '%s' "$stats" | jq -r '.healthScore // 0' | awk '{printf "%.0f", $1 * 100}')
+
+  actions=""
+  [ "$pending" -gt 0 ] && actions="${actions} ${pending}-pending-compile"
+  [ "$articles" -eq 0 ] && actions="${actions} empty-kb-needs-onboarding"
+
+  if [ -n "$actions" ]; then
+    msg="pekg: ${articles} articles, health ${health}% — action needed:${actions}. call mcp__pekg__status, then follow CLAUDE.md session-start protocol."
+  else
+    msg="pekg: ${articles} articles, health ${health}%, healthy — run mcp__pekg__status precheck."
+  fi
+
+  # A48 inverse: clear stale NETWORK_BLOCKER if persisted.
+  if [ -n "$session_id" ]; then
+    local cur task blockers cleaned
+    cur=$(pekg_state_read "$session_id" 2>/dev/null || true)
+    if [ -n "$cur" ]; then
+      task=$(printf '%s' "$cur" | jq -c '.task // {}')
+      blockers=$(printf '%s' "$cur" | jq -c '.blockers // []')
+      cleaned=$(pekg_strip_network_blocker "$blockers")
+      pekg_state_write "$session_id" "$task" "$cleaned" || true
+    fi
+  fi
+
+  pekg_append_pending_markers msg
+
+  jq -n --arg msg "$msg" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$msg}}'
+}
+
+# Append A45 (restart prompt) and A2d (update notice) markers to a passed
+# variable name (bash nameref). Clears the marker files after surfacing.
+# Called from both online and offline SessionStart paths so notices fire
+# regardless of API state.
+pekg_append_pending_markers() {
+  local var_name="$1"
+  local current="${!var_name}"
+
+  local restart_marker="$HOME/.pekg/.needs-restart"
+  if [ -f "$restart_marker" ]; then
+    current="${current}"$'\n\n'"PeKG: configuration changed (token rotated or just installed). Restart Claude Code so the MCP server registration takes effect; until then mcp__pekg__* tools may be unavailable."
+    rm -f "$restart_marker" 2>/dev/null || true
+  fi
+
+  local update_notice_file="$HOME/.pekg/.update-notice"
+  if [ -f "$update_notice_file" ]; then
+    local update_notice
+    update_notice=$(cat "$update_notice_file" 2>/dev/null || true)
+    [ -n "$update_notice" ] && current="${current}"$'\n\n'"$update_notice"
+    rm -f "$update_notice_file" 2>/dev/null || true
+  fi
+
+  printf -v "$var_name" '%s' "$current"
+}
+
+main

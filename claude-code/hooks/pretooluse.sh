@@ -29,10 +29,11 @@ deny() {
 }
 
 main() {
-  local input tool session_id
+  local input tool session_id transcript_path
   input=$(cat 2>/dev/null || true)
   tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
   session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
+  transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
 
   # Always-allow: internal tool-discovery surfaces.
   case "$tool" in
@@ -69,12 +70,38 @@ main() {
         if [ -n "$state" ]; then
           blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
           if pekg_has_active_blockers "$blockers"; then
+            # A30b: drop blockers acked recently in this session (cooldown).
+            local acked_map
+            acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+            blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+          fi
+          if pekg_has_active_blockers "$blockers"; then
             # Extract target file path from CC's tool_input shape.
             local target_path
             target_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
             local effective_blockers
             effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "$target_path")
             if pekg_has_active_blockers "$effective_blockers"; then
+              # A30b: try in-turn ack against the live transcript. If the
+              # latest assistant text references the active blockers and
+              # describes a concrete mitigation, accept it and persist the
+              # ack so subsequent edits in this turn / cooldown window
+              # flow through without re-acking.
+              if pekg_try_in_turn_ack "$session_id" "$effective_blockers" "$transcript_path"; then
+                allow
+              fi
+              # A30c: loop-bound safety net. Bump per-blocker denial counter;
+              # if any blocker hit the threshold, force-ack it and re-evaluate.
+              if pekg_record_denial_and_maybe_force_ack "$session_id" "$effective_blockers"; then
+                state=$(pekg_state_read "$session_id" 2>/dev/null || true)
+                blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+                acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+                blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+                effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "$target_path")
+                if ! pekg_has_active_blockers "$effective_blockers"; then
+                  allow
+                fi
+              fi
               local reason
               reason=$(pekg_format_denial_reason "$effective_blockers")
               deny "$reason"
@@ -96,6 +123,11 @@ main() {
       state=$(pekg_state_read "$session_id" 2>/dev/null || true)
       if [ -n "$state" ]; then
         blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+        if pekg_has_active_blockers "$blockers"; then
+          local acked_map
+          acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+          blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+        fi
         if pekg_has_active_blockers "$blockers" && pekg_is_workspace_mutation_cmd "$cmd"; then
           local effective_blockers
           if pekg_bash_cmd_targets_markdown "$cmd"; then
@@ -104,6 +136,23 @@ main() {
             effective_blockers="$blockers"
           fi
           if pekg_has_active_blockers "$effective_blockers"; then
+            if pekg_try_in_turn_ack "$session_id" "$effective_blockers" "$transcript_path"; then
+              allow
+            fi
+            if pekg_record_denial_and_maybe_force_ack "$session_id" "$effective_blockers"; then
+              state=$(pekg_state_read "$session_id" 2>/dev/null || true)
+              blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+              acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+              blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+              if pekg_bash_cmd_targets_markdown "$cmd"; then
+                effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "<bash-target>.md")
+              else
+                effective_blockers="$blockers"
+              fi
+              if ! pekg_has_active_blockers "$effective_blockers"; then
+                allow
+              fi
+            fi
             local reason
             reason=$(pekg_format_denial_reason "$effective_blockers")
             deny "$reason"$'\n\nDangerous bash command detected (sed -i / tee / file redirect / git apply / etc).'
@@ -185,11 +234,11 @@ main() {
 
   # Pekg-prefix sanity: reject obvious typos/look-alikes early.
   case "$tool" in
-    mcp__pekg__status|mcp__pekg__ingest|mcp__pekg__search|mcp__pekg__compile|mcp__pekg__context|mcp__pekg__health|mcp__pekg__scan|mcp__pekg__deep_scan|mcp__pekg__graph|mcp__pekg__feedback|mcp__pekg__hive|pekg_status|pekg_ingest|pekg_search|pekg_compile|pekg_context|pekg_health|pekg_scan|pekg_deep_scan|pekg_graph|pekg_feedback|pekg_hive)
+    mcp__pekg__status|mcp__pekg__ingest|mcp__pekg__search|mcp__pekg__compile|mcp__pekg__context|mcp__pekg__health|mcp__pekg__scan|mcp__pekg__deep_scan|mcp__pekg__graph|mcp__pekg__feedback|mcp__pekg__hive|mcp__pekg__pending_writes|mcp__pekg__complete_write|pekg_status|pekg_ingest|pekg_search|pekg_compile|pekg_context|pekg_health|pekg_scan|pekg_deep_scan|pekg_graph|pekg_feedback|pekg_hive|pekg_pending_writes|pekg_complete_write)
       allow
       ;;
     mcp__pekg__*|pekg_*)
-      deny "Tool $tool is not a valid PeKG tool. Valid: mcp__pekg__{status,ingest,search,compile,context,health,scan,deep_scan,graph,feedback,hive}."
+      deny "Tool $tool is not a valid PeKG tool. Valid: mcp__pekg__{status,ingest,search,compile,context,health,scan,deep_scan,graph,feedback,hive,pending_writes,complete_write}."
       ;;
   esac
 
@@ -198,13 +247,13 @@ main() {
     allow
   fi
 
-  # Status-first soft gate (parallel-call race-safe).
-  # Opt-out via PEKG_LEGACY_STATUS_GATE=0 — needed for headless `claude -p`
-  # runs (claude generates fresh session_ids ignoring --session-id, so a
-  # pre-seeded marker can't satisfy this gate, and the deny-loop hangs the
-  # session). The real blocker enforcement (A5b above) is the proper gate;
-  # this legacy "must call status first" gate is a soft signal only.
-  if [ "${PEKG_LEGACY_STATUS_GATE:-1}" = "1" ] && [ ! -f "$status_marker" ]; then
+  # Status-first soft gate (legacy, default OFF as of 2026-04-27).
+  # Opt-IN via PEKG_LEGACY_STATUS_GATE=1 if you want the historic "must call
+  # status before any other tool" check. The real blocker enforcement (A5b
+  # above) is the proper gate; this legacy gate added 5s synchronous wait
+  # to every fresh session for negligible safety value, so it now defaults
+  # off. Headless `claude -p` runs and CI flows benefit most from the flip.
+  if [ "${PEKG_LEGACY_STATUS_GATE:-0}" = "1" ] && [ ! -f "$status_marker" ]; then
     local elapsed=0
     while [ ! -f "$status_marker" ] && [ "$elapsed" -lt 5000 ]; do
       sleep 0.1

@@ -178,6 +178,22 @@ jq -n \
 cp "$ROOT/codex/prompts/pekg-connect.md" "$HOME/.codex/prompts/pekg-connect.md"
 echo "[local-install] Codex: config.toml + hooks.json updated"
 
+# --- OpenCode --------------------------------------------------------------
+# OpenCode plugins are auto-discovered TS files in ~/.config/opencode/plugins/.
+# Unlike CC + Codex (bash hooks, symlinked), OpenCode runs the TS in-process,
+# so we copy (not symlink) and timestamp-backup the prior version. Putting
+# this in the install script means "is my Mac running the latest plugin code"
+# has a single answer for all three agents.
+OC_PLUGIN_DIR="$HOME/.config/opencode/plugins"
+OC_PLUGIN_FILE="$OC_PLUGIN_DIR/pekg.ts"
+mkdir -p "$OC_PLUGIN_DIR"
+if [ -f "$OC_PLUGIN_FILE" ]; then
+  cp "$OC_PLUGIN_FILE" "$OC_PLUGIN_FILE.bak.$(date +%Y%m%d-%H%M%S)"
+fi
+cp "$ROOT/opencode/opencode.ts" "$OC_PLUGIN_FILE"
+OC_VERSION=$(grep -oE 'PLUGIN_VERSION\s*=\s*"[^"]+"' "$OC_PLUGIN_FILE" | head -1 | sed -E 's/.*"([^"]+)"/\1/')
+echo "[local-install] OpenCode: pekg.ts copied → $OC_PLUGIN_FILE (v${OC_VERSION:-?})"
+
 echo ""
 echo "Local install complete. Hooks point at the live source tree (symlinks)."
 echo "  Edit -> bash plugins/build.sh -> changes apply immediately."

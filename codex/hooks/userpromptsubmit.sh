@@ -79,7 +79,7 @@ main() {
 
   local top
   top=$(printf '%s' "$result" | jq --rawfile seen "$seen_file" --argjson firstRun "$first_run" --argjson budget "${PEKG_CONTEXT_TOKEN_BUDGET:-4000}" --argjson chars "${PEKG_AVG_CHARS_PER_TOKEN:-4}" '
-    def threshold($tier): if $tier == "blocker" then 0.65 elif $tier == "warning" then 0.55 else 0.7 end;
+    def threshold($tier): if $tier == "blocker" then 0.80 elif $tier == "warning" then 0.55 else 0.40 end;
     def tier_rank($tier): if $tier == "blocker" then 0 elif $tier == "warning" then 1 else 2 end;
     ($seen | split("\n") | map(select(length > 0))) as $seen_ids |
     ($budget * $chars) as $char_cap |
@@ -172,7 +172,7 @@ main() {
   context="$resume_block"
   [ -n "$slash_warning" ] && context+="$slash_warning"$'\n\n'
   if [ "$has_blockers" = "true" ]; then
-    context+="STOP - PeKG BLOCKERS DETECTED. Quote the blocker title verbatim AND describe the concrete mitigation before any file-mutating tool. Generic acks (\"acknowledged\", \"will be careful\") are rejected."$'\n'
+    context+="STOP - PeKG BLOCKERS DETECTED. In your reply, reference each blocker (title fragment, ID prefix, or its key terms) AND describe the concrete mitigation you're applying. Then proceed with file-mutating tools — the gate's in-turn ack will pass once the heuristic detects the reference + action verb. Generic acks (\"acknowledged\", \"will be careful\") are rejected."$'\n'
   else
     context+="PeKG knowledge:"$'\n'
   fi

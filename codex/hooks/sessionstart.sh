@@ -44,12 +44,25 @@ main() {
   stats=$(pekg_get "/api/v1/dashboard/stats" 3 2>/dev/null || true)
 
   if [ -z "$stats" ]; then
+    # A48 revised (2026-04-27): fail-open. Strip stale NETWORK_BLOCKER and
+    # let the session run unblocked — context enrichment is lost this turn,
+    # but edits aren't gated by network state.
     if [ -n "$session_id" ]; then
-      local blockers
-      blockers=$(pekg_synth_network_blocker)
-      pekg_state_write "$session_id" "{}" "$blockers"
+      local cur task blockers cleaned
+      cur=$(pekg_state_read "$session_id" 2>/dev/null || true)
+      if [ -n "$cur" ]; then
+        task=$(printf '%s' "$cur" | jq -c '.task // {}')
+        blockers=$(printf '%s' "$cur" | jq -c '.blockers // []')
+        cleaned=$(pekg_strip_network_blocker "$blockers")
+        pekg_state_write "$session_id" "$task" "$cleaned" || true
+      fi
     fi
-    local offline_msg="pekg: api unreachable — edits gated; set PEKG_OFFLINE=1 to bypass"
+    local offline_msg
+    if pekg_offline; then
+      offline_msg="pekg: offline mode (PEKG_OFFLINE=1) — context disabled this session"
+    else
+      offline_msg="pekg: api unreachable — context disabled this session, edits not gated"
+    fi
     pekg_append_pending_markers offline_msg
     jq -n --arg m "$offline_msg" '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$m}}'
     return 0

@@ -29,10 +29,11 @@ deny() {
 }
 
 main() {
-  local input tool session_id
+  local input tool session_id transcript_path
   input=$(cat 2>/dev/null || true)
   tool=$(printf '%s' "$input" | jq -r '.tool_name // empty')
   session_id=$(printf '%s' "$input" | jq -r '.session_id // empty')
+  transcript_path=$(printf '%s' "$input" | jq -r '.transcript_path // empty')
 
   pekg_load_config
 
@@ -55,11 +56,30 @@ main() {
         if [ -n "$state" ]; then
           blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
           if pekg_has_active_blockers "$blockers"; then
+            local acked_map
+            acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+            blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+          fi
+          if pekg_has_active_blockers "$blockers"; then
             local target_path
             target_path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.path // empty')
             local effective_blockers
             effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "$target_path")
             if pekg_has_active_blockers "$effective_blockers"; then
+              if pekg_try_in_turn_ack "$session_id" "$effective_blockers" "$transcript_path"; then
+                allow
+              fi
+              # A30c: loop-bound safety net (same as CC).
+              if pekg_record_denial_and_maybe_force_ack "$session_id" "$effective_blockers"; then
+                state=$(pekg_state_read "$session_id" 2>/dev/null || true)
+                blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+                acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+                blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+                effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "$target_path")
+                if ! pekg_has_active_blockers "$effective_blockers"; then
+                  allow
+                fi
+              fi
               local reason
               reason=$(pekg_format_denial_reason "$effective_blockers")
               deny "$reason"
@@ -81,6 +101,11 @@ main() {
       state=$(pekg_state_read "$session_id" 2>/dev/null || true)
       if [ -n "$state" ]; then
         blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+        if pekg_has_active_blockers "$blockers"; then
+          local acked_map
+          acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+          blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+        fi
         if pekg_has_active_blockers "$blockers" && pekg_is_workspace_mutation_cmd "$cmd"; then
           local effective_blockers
           if pekg_bash_cmd_targets_markdown "$cmd"; then
@@ -89,6 +114,23 @@ main() {
             effective_blockers="$blockers"
           fi
           if pekg_has_active_blockers "$effective_blockers"; then
+            if pekg_try_in_turn_ack "$session_id" "$effective_blockers" "$transcript_path"; then
+              allow
+            fi
+            if pekg_record_denial_and_maybe_force_ack "$session_id" "$effective_blockers"; then
+              state=$(pekg_state_read "$session_id" 2>/dev/null || true)
+              blockers=$(printf '%s' "$state" | jq -c '.blockers // []')
+              acked_map=$(printf '%s' "$state" | jq -c '.ackedBlockers // {}')
+              blockers=$(pekg_filter_acked_blockers "$blockers" "$acked_map" "$(date +%s)")
+              if pekg_bash_cmd_targets_markdown "$cmd"; then
+                effective_blockers=$(pekg_filter_blockers_for_file "$blockers" "<bash-target>.md")
+              else
+                effective_blockers="$blockers"
+              fi
+              if ! pekg_has_active_blockers "$effective_blockers"; then
+                allow
+              fi
+            fi
             local reason
             reason=$(pekg_format_denial_reason "$effective_blockers")
             deny "$reason"$'\n\nDangerous bash command detected (sed -i / tee / file redirect / git apply / etc).'

@@ -1,5 +1,5 @@
 /**
- * PeKG OpenCode Plugin v3.14.1
+ * PeKG OpenCode Plugin v3.14.6
  *
  * Connects OpenCode agents to PeKG (pekg.ai) personal knowledge graph.
  * Current version is also exposed at runtime via PLUGIN_VERSION (User-Agent
@@ -34,7 +34,7 @@ const HOME = process.env.HOME || process.env.USERPROFILE || "~";
 const CONFIG_PATH = `${HOME}/.pekg/config.json`;
 const OPENCODE_CONFIG = `${HOME}/.config/opencode/opencode.json`;
 const FEEDBACK_QUEUE_DIR = `${HOME}/.pekg/feedback-queue`;
-const PLUGIN_VERSION = "3.14.1"; // 3.14.1: PEKG_OFFLINE=1 now bypasses stale persisted blocker state in rehydrateBlockerState
+const PLUGIN_VERSION = "3.14.6"; // 3.14.6: ack cooldown 10min → 30min; ackedAt prune 30min → 60min — matches typical refactor-session length (25-min real-world re-block report)
 const SESSION_STATE_DIR = `${HOME}/.pekg/sessions`;
 const PEKG_OFFLINE = process.env.PEKG_OFFLINE === "1";
 const NETWORK_BLOCKER_ID = "00000000-0000-0000-0000-pekgNetworkErr";
@@ -845,16 +845,23 @@ function pekgExtractTokens(text: string): Set<string> {
 
 // Issue 6: per-tier plugin-side relevance floor. Server's RELEVANCE_THRESHOLD
 // stays at 0.5 for non-gating clients (dashboard search, Codex hooks). Plugin
-// is opinionated: a blocker below 0.65 is demoted to warning (still visible,
-// doesn't gate). A warning below 0.55 is dropped. Info below 0.7 is dropped.
+// is opinionated: a blocker below 0.80 is demoted to warning (still visible,
+// doesn't gate). A warning below 0.55 is dropped. Info below 0.40 is dropped.
 // Floors are constants at module top so we can A/B by editing one line.
+//
+// Hierarchy: blocker (hardest to qualify) > warning (mid) > info (ambient fyi,
+// lowest bar). Inverting info above warning would hide low-confidence context
+// behind a stricter bar than the next-louder tier — backwards.
 //
 // Apply order: floor BEFORE budget. Otherwise a 0.99 blocker can be evicted
 // by a 0.66 warning under budget pressure — the floor is a quality filter,
 // the budget is a size filter; quality wins.
-const PEKG_BLOCKER_FLOOR = 0.65;
+//
+// 2026-04-27: blocker floor raised 0.65 → 0.80; info floor lowered 0.70 → 0.40.
+// Mirror constants in plugins/shared/lib/blockers.sh — keep in sync.
+const PEKG_BLOCKER_FLOOR = 0.80;
 const PEKG_WARNING_FLOOR = 0.55;
-const PEKG_INFO_FLOOR = 0.7;
+const PEKG_INFO_FLOOR = 0.40;
 
 function pekgApplyTierFloor(articles: readonly ContextArticle[]): ContextArticle[] {
   return articles
@@ -1732,12 +1739,60 @@ export const PeKGPlugin: Plugin = async (ctx) => {
     lastAgentResponse?: string;
     verifiedAt?: number;
     ackedAt?: Record<string, number>;
+    // A30c (loop-bound safety net): consecutive-deny counter per blocker.
+    // After BLOCKER_DENIAL_THRESHOLD denials of the same blocker, the gate
+    // force-acks it (writes to ackedAt) so the agent can't loop forever.
+    denialCounts?: Record<string, number>;
   }
   const activeBlockers = new Map<string, BlockerState>();
-  // Issue 7 constants. 10-min cooldown matches typical multi-edit task
-  // flow. 30-min prune bounds ackedAt growth across long sessions.
-  const BLOCKER_ACK_COOLDOWN_MS = 10 * 60 * 1000;
-  const BLOCKER_ACK_PRUNE_MS = 30 * 60 * 1000;
+  // Issue 7 constants. 30-min cooldown matches typical multi-edit task
+  // flow (a single feature usually wraps in <30 min). 60-min prune bounds
+  // ackedAt growth across long sessions. Bumped from 10/30 → 30/60 after
+  // real-world report (Apr 2026): a 25-min refactor session re-blocked at
+  // the orchestrator-wiring step because the prior cooldown had expired.
+  const BLOCKER_ACK_COOLDOWN_MS = 30 * 60 * 1000;
+  const BLOCKER_ACK_PRUNE_MS = 60 * 60 * 1000;
+  // A30c: how many consecutive denials of the SAME blocker on this session
+  // before we auto-pass it. Cooperative agents pass on attempt 1; if we've
+  // hit attempt N, either the heuristic is broken or the agent isn't acking.
+  // Either way, ~3 attempts is enough signal that a human should look —
+  // bound the worst-case pain.
+  const BLOCKER_DENIAL_THRESHOLD = 3;
+
+  // A30c safety net helper. Increment denial counters for the given blockers
+  // and, if any reaches the threshold, force-ack it (writes to ackedAt and
+  // resets the counter). Returns the list of blocker IDs that were force-acked.
+  function pekgRecordDenialAndMaybeForceAck(
+    state: BlockerState,
+    blockers: ContextArticle[],
+    threshold: number,
+  ): string[] {
+    if (!blockers.length) return [];
+    const now = Date.now();
+    const dc = (state.denialCounts ??= {});
+    const ackedAt = (state.ackedAt ??= {});
+    const forced: string[] = [];
+    for (const b of blockers) {
+      const id = b.articleId;
+      if (!id) continue;
+      const next = (dc[id] ?? 0) + 1;
+      if (next >= threshold) {
+        ackedAt[id] = now;
+        dc[id] = 0;
+        forced.push(id);
+      } else {
+        dc[id] = next;
+      }
+    }
+    if (forced.length) {
+      // stderr breadcrumb — visible in OpenCode plugin logs, not in the
+      // user-facing throw, so the agent can't game the threshold by
+      // counting denials.
+      // eslint-disable-next-line no-console
+      console.error(`pekg: blocker(s) auto-passed after ${threshold} denials: ${forced.join(",")}`);
+    }
+    return forced;
+  }
 
   // Single writer for ~/.pekg/sessions/<sid>.json: always writes the
   // PersistedSessionState envelope, preserving any task-tracking state already
@@ -2715,12 +2770,12 @@ NOT reusable: refactoring, renaming, formatting, project-specific logic.
         // follows; agents that skim past long blocks still see the
         // headline. Long-form rules now in the verifier prompt only.
         const blockerCount = result.blockers.length;
-        const summary = `pekg: ${blockerCount} active blocker(s) — ack format: quote title + concrete mitigation`;
+        const summary = `pekg: ${blockerCount} active blocker(s) — ack: reference each blocker (title fragment, ID prefix, or key terms) + concrete mitigation`;
         injectionText = `${summary}
 
 ${resumedSessionBlock}${guaranteedSection}${renderedContext}
 
-(File-mutating tools — edit/write/multiedit/apply_patch/bash sed -i tee redirects — are gated until each blocker is acked by title with a concrete mitigation. Generic acks fail verification.)`;
+(File-mutating tools — edit/write/multiedit/apply_patch/bash sed -i tee redirects — are gated until each blocker is acked. Reference the blocker by partial title, ID prefix, or its key terms in your reply, AND describe the concrete mitigation. Generic acks fail verification.)`;
       } else if (renderedContext || guaranteedSection || resumedSessionBlock) {
         injectionText = `PeKG Knowledge:
 
@@ -2887,11 +2942,21 @@ Types: bug_fix, pattern, decision, learning, gotcha. Skip if it's just refactori
           // work. Security / privacy / compliance blockers stay at blocker
           // even on markdown.
           const targetFilePath: string | undefined = output.args?.filePath;
-          const effectiveBlockers = pekgFilterBlockersForFile(cooledDown, targetFilePath);
+          let effectiveBlockers = pekgFilterBlockersForFile(cooledDown, targetFilePath);
+          if (effectiveBlockers.length > 0) {
+            // A30c: bump per-blocker denial counter; if any hit the threshold,
+            // force-ack and re-evaluate before throwing.
+            const forced = pekgRecordDenialAndMaybeForceAck(blockerState, effectiveBlockers, BLOCKER_DENIAL_THRESHOLD);
+            if (forced.length > 0) {
+              persistBlockerState(sessionId);
+              const cooled2 = pekgFilterAckedBlockers(blockerState.blockers, blockerState.ackedAt, Date.now(), BLOCKER_ACK_COOLDOWN_MS);
+              effectiveBlockers = pekgFilterBlockersForFile(cooled2, targetFilePath);
+            }
+          }
           if (effectiveBlockers.length > 0) {
             const blockerTitles = effectiveBlockers.map((b) => b.title).join(", ");
             throw new Error(
-              `PeKG BLOCKER: Cannot use ${toolName} until you acknowledge the blockers: ${blockerTitles}. In your next assistant message, quote each blocker by name and describe the concrete change you will make to avoid it. PeKG will verify the acknowledgment is specific (not "acknowledged" / "noted").`,
+              `PeKG BLOCKER: Cannot use ${toolName} until you acknowledge the blockers: ${blockerTitles}. In your next assistant message, reference each blocker (title fragment, ID prefix, or its key terms) AND describe the concrete mitigation you're applying. Generic acks ("acknowledged" / "noted") are rejected. After ${BLOCKER_DENIAL_THRESHOLD} consecutive denials of the same blocker, the gate auto-passes — surface the issue so the heuristic can be improved.`,
             );
           }
         }
@@ -2917,13 +2982,23 @@ Types: bug_fix, pattern, decision, learning, gotcha. Skip if it's just refactori
             // the filter — we don't have the exact file but the rule only
             // looks at extension class.
             const isMarkdownWrite = pekgBashCmdTargetsMarkdown(cmd);
-            const effectiveBlockers = isMarkdownWrite
+            let effectiveBlockers = isMarkdownWrite
               ? pekgFilterBlockersForFile(cooledDown, "<bash-target>.md")
               : cooledDown;
             if (effectiveBlockers.length > 0) {
+              const forced = pekgRecordDenialAndMaybeForceAck(blockerState, effectiveBlockers, BLOCKER_DENIAL_THRESHOLD);
+              if (forced.length > 0) {
+                persistBlockerState(sessionId);
+                const cooled2 = pekgFilterAckedBlockers(blockerState.blockers, blockerState.ackedAt, Date.now(), BLOCKER_ACK_COOLDOWN_MS);
+                effectiveBlockers = isMarkdownWrite
+                  ? pekgFilterBlockersForFile(cooled2, "<bash-target>.md")
+                  : cooled2;
+              }
+            }
+            if (effectiveBlockers.length > 0) {
               const titles = effectiveBlockers.map((b) => b.title).join(", ");
               throw new Error(
-                `PeKG BLOCKER: This bash command writes to workspace files (sed -i / tee / redirect / perl -pi / etc.) but PeKG blockers are unacknowledged: ${titles}. Acknowledge each blocker by name with a concrete mitigation, then retry.`,
+                `PeKG BLOCKER: This bash command writes to workspace files (sed -i / tee / redirect / perl -pi / etc.) but PeKG blockers are unacknowledged: ${titles}. Reference each blocker (title fragment, ID prefix, or key terms) + concrete mitigation, then retry. Auto-passes after ${BLOCKER_DENIAL_THRESHOLD} consecutive denials of the same blocker.`,
               );
             }
           }

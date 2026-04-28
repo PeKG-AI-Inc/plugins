@@ -89,7 +89,10 @@ test_sessionstart_no_token() {
   assert_contains "Claude Code SessionStart no-token → connect prompt" "not connected" "$got"
 }
 
-# --- Test 2: SessionStart offline → NETWORK_BLOCKER ---------------------------
+# --- Test 2: SessionStart offline → fail-open (no NETWORK_BLOCKER) ------------
+# 2026-04-27 contract change: a transient API error / offline mode must not
+# gate edits for the rest of the session. SessionStart now fails open —
+# emits a status note, does not synthesize a NETWORK_BLOCKER.
 test_sessionstart_offline_blocker() {
   TEST_HOME=$(mktemp -d)
   mkdir -p "$TEST_HOME/.pekg/sessions"
@@ -101,18 +104,21 @@ test_sessionstart_offline_blocker() {
 
   local got_msg
   got_msg=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.additionalContext // empty')
-  assert_contains "Claude Code SessionStart offline → unreachable msg" "api unreachable" "$got_msg"
+  # PEKG_OFFLINE=1 path: surface the offline mode, not the misleading
+  # "edits gated" wording the legacy contract used.
+  assert_contains "Claude Code SessionStart offline → offline mode msg" "offline mode" "$got_msg"
+  assert_contains "Claude Code SessionStart offline → no edits-gated lie" "context disabled" "$got_msg"
 
-  # State file should be written with synthetic NETWORK_BLOCKER.
+  # State file must NOT contain a NETWORK_BLOCKER. Either no file (no prior
+  # state to clean), or a file with empty/no blockers (stripped).
   local state_file="$TEST_HOME/.pekg/sessions/t2.json"
   if [ -f "$state_file" ]; then
-    local synth_id
-    synth_id=$(jq -r '.blockers[0].id // empty' "$state_file")
-    assert_eq "Claude Code SessionStart offline → NETWORK_BLOCKER persisted" "00000000-0000-0000-0000-pekgNetworkErr" "$synth_id"
+    local synth_present
+    synth_present=$(jq -r '[.blockers[]? | select(.id == "00000000-0000-0000-0000-pekgNetworkErr")] | length' "$state_file")
+    assert_eq "Claude Code SessionStart offline → no NETWORK_BLOCKER persisted" "0" "$synth_present"
   else
-    FAIL=$((FAIL + 1))
-    FAILED_TESTS+=("Claude Code SessionStart offline → state file not written")
-    echo "  FAIL  state file missing: $state_file"
+    PASS=$((PASS + 1))
+    echo "  PASS  Claude Code SessionStart offline → no state file written (fail-open)"
   fi
 
   rm -rf "$TEST_HOME"
@@ -150,7 +156,11 @@ test_pretooluse_dangerous_bash() {
   mkdir -p "$TEST_HOME/.pekg/sessions" "$TEST_HOME/.pekg/session-state"
   echo '{"token":"test-token"}' > "$TEST_HOME/.pekg/config.json"
   touch "$TEST_HOME/.pekg/session-state/t4.status_called"
-  jq -n '{task:{},blockers:[{id:"x",title:"Test blocker",recommendation:"do thing",tier:"blocker"}],timestamp:0,expiresAt:9999999999}' \
+  # Use security-keyword summary so Issue 8 markdown re-tier preserves the
+  # blocker: sed -i targeting x.txt (markdown ext) would otherwise demote a
+  # generic code-domain blocker per the markdown carve-out logic. Security
+  # / privacy / compliance keywords keep the blocker tier on any file type.
+  jq -n '{task:{},blockers:[{id:"x",title:"Test blocker",recommendation:"security audit requires prepared statements",tier:"blocker"}],timestamp:0,expiresAt:9999999999}' \
     > "$TEST_HOME/.pekg/sessions/t4.json"
 
   local out
@@ -174,6 +184,237 @@ test_pretooluse_no_blockers_allow() {
   out=$(run_hook "$DIST_CC/pretooluse.sh" '{"session_id":"t5","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.txt"}}')
   # No body = exit 0 = allow.
   assert_eq "Claude Code PreToolUse no blockers → allow (empty stdout)" "" "$out"
+
+  rm -rf "$TEST_HOME"
+}
+
+# --- Test 5b: PreToolUse in-turn ack via transcript clears the gate ----------
+# A30b — agent acks the blocker in its assistant text; the next mutating tool
+# call within the cooldown should pass without re-acking. Canary: this fails
+# on the pre-A30b dist where the gate had no transcript path.
+test_pretooluse_in_turn_ack_clears_gate() {
+  TEST_HOME=$(mktemp -d)
+  mkdir -p "$TEST_HOME/.pekg/sessions" "$TEST_HOME/.pekg/session-state"
+  echo '{"token":"test-token"}' > "$TEST_HOME/.pekg/config.json"
+  touch "$TEST_HOME/.pekg/session-state/t5b.status_called"
+  jq -n '{
+    task:{},
+    blockers:[{id:"sql-1",title:"Use parameterized SQL",recommendation:"prepared statements",tier:"blocker"}],
+    timestamp:0,
+    expiresAt:9999999999
+  }' > "$TEST_HOME/.pekg/sessions/t5b.json"
+
+  # Build a Claude Code-shape transcript JSONL with an assistant turn that
+  # references the blocker title's significant words + a concrete action.
+  local transcript="$TEST_HOME/transcript.jsonl"
+  cat > "$transcript" <<'JSONL'
+{"type":"user","message":{"role":"user","content":"add the user lookup query"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll switch the user lookup to use parameterized SQL with prepared statements — replacing the string concatenation with a $1 placeholder."}]}}
+JSONL
+
+  local event="{\"session_id\":\"t5b\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/x.ts\"},\"transcript_path\":\"$transcript\"}"
+  local out
+  out=$(run_hook "$DIST_CC/pretooluse.sh" "$event")
+  # In-turn ack should ALLOW (empty stdout = exit 0).
+  assert_eq "PreToolUse in-turn ack → allow (canary)" "" "$out"
+
+  # Verify ackedBlockers entry was persisted with the blocker id.
+  local acked_ts
+  acked_ts=$(jq -r '.ackedBlockers["sql-1"] // empty' "$TEST_HOME/.pekg/sessions/t5b.json" 2>/dev/null)
+  if [ -n "$acked_ts" ]; then
+    PASS=$((PASS + 1)); echo "  PASS  PreToolUse in-turn ack → ackedBlockers entry persisted ($acked_ts)"
+  else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("PreToolUse in-turn ack → ackedBlockers entry persisted")
+    echo "  FAIL  ackedBlockers[sql-1] missing after ack"
+  fi
+
+  # Second tool call with the same blocker still in state should ALSO allow
+  # because the cooldown entry is fresh.
+  local out2
+  out2=$(run_hook "$DIST_CC/pretooluse.sh" "{\"session_id\":\"t5b\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/y.ts\"}}")
+  assert_eq "PreToolUse second call within cooldown → still allow" "" "$out2"
+
+  rm -rf "$TEST_HOME"
+}
+
+# --- Test 5b2: PreToolUse in-turn ack across multi-event CC turn -------------
+# CC 2.1.x splits one logical assistant turn across separate JSONL events: a
+# thinking event, optionally a text event, and one or more tool_use events.
+# When PreToolUse fires for the tool_use event, the LAST assistant event is
+# the tool_use itself (no text/thinking content). The transcript reader has
+# to look back across multiple recent assistant events. This test reproduces
+# that exact shape and asserts the gate still passes.
+test_pretooluse_in_turn_ack_multi_event_shape() {
+  TEST_HOME=$(mktemp -d)
+  mkdir -p "$TEST_HOME/.pekg/sessions" "$TEST_HOME/.pekg/session-state"
+  echo '{"token":"test-token"}' > "$TEST_HOME/.pekg/config.json"
+  touch "$TEST_HOME/.pekg/session-state/t5b2.status_called"
+  jq -n '{
+    task:{},
+    blockers:[{id:"sql-1",title:"Use parameterized SQL",recommendation:"prepared statements",tier:"blocker"}],
+    timestamp:0,
+    expiresAt:9999999999
+  }' > "$TEST_HOME/.pekg/sessions/t5b2.json"
+
+  # Multi-event transcript: thinking event with the ack reasoning, then a
+  # tool_use event with NO text — exactly what CC writes today.
+  local transcript="$TEST_HOME/transcript.jsonl"
+  cat > "$transcript" <<'JSONL'
+{"type":"user","message":{"role":"user","content":"add the user lookup"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"I need to switch the user lookup to use parameterized SQL with prepared statements — replacing string concatenation with placeholders."}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"x.ts"}]}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/tmp/x.ts"}}]}}
+JSONL
+
+  local event="{\"session_id\":\"t5b2\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/x.ts\"},\"transcript_path\":\"$transcript\"}"
+  local out
+  out=$(run_hook "$DIST_CC/pretooluse.sh" "$event")
+  # The gate must allow because the ack is in the thinking block of an
+  # earlier assistant event. Pre-fix, this denied (canary).
+  assert_eq "PreToolUse multi-event ack via thinking block → allow (canary)" "" "$out"
+
+  rm -rf "$TEST_HOME"
+}
+
+# --- Test 5f: heuristic accepts title with project prefix stripped ----------
+# Real-world: blocker titles often have a project prefix like
+# "Engage OS: Apollo Enrichment Failure Diagnosis and Fix". Agents naturally
+# write the topic-half ("Apollo Enrichment Failure...") without restating
+# the project. Verbatim path now strips the "Project: " prefix and tries
+# the topic-half as a substring.
+test_heuristic_accepts_prefix_stripped_title() {
+  source "$ROOT/shared/lib/blockers.sh"
+  printf "\n[Heuristic prefix-stripped title match]\n"
+  local B='[{"id":"abc12345-def0","title":"Engage OS: Apollo Enrichment Failure Diagnosis and Fix","recommendation":"x","tier":"blocker"}]'
+
+  if pekg_heuristic_ack "$B" "I created the apollo enrichment failure diagnosis and fix module"; then
+    PASS=$((PASS + 1)); echo "  PASS  prefix-stripped match: 'apollo enrichment failure diagnosis and fix'"
+  else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("prefix-stripped match: apollo enrichment failure")
+    echo "  FAIL  prefix-stripped did not match"
+  fi
+
+  # Full title still matches (regression check).
+  if pekg_heuristic_ack "$B" "I created Engage OS: Apollo Enrichment Failure Diagnosis and Fix module"; then
+    PASS=$((PASS + 1)); echo "  PASS  full prefixed title still matches"
+  else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("full prefixed title regression")
+    echo "  FAIL  full prefixed title broken"
+  fi
+
+  # Titles without a colon: stripped == full, no behavior change.
+  local B2='[{"id":"a1234567","title":"Use parameterized SQL queries","recommendation":"x","tier":"blocker"}]'
+  if pekg_heuristic_ack "$B2" "I added parameterized SQL queries"; then
+    PASS=$((PASS + 1)); echo "  PASS  no-colon title unaffected"
+  else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("no-colon title unaffected")
+    echo "  FAIL  no-colon title broken"
+  fi
+}
+
+# --- Test 5e: heuristic matches verb suffixes (-ed/-ing/-s) -----------------
+# Real-world bug from the parallel-agent transcript (Apr 2026): the agent
+# wrote "I created the file" / "refactoring the orchestrator" / "fixes the
+# breaker" — past-tense / present-participle / plural verb forms — and the
+# heuristic silently failed because \b(create|fix|...)\b doesn't match a
+# suffixed word. Pre-fix this test fails; post-fix it passes.
+test_heuristic_accepts_verb_suffixes() {
+  source "$ROOT/shared/lib/blockers.sh"
+  printf "\n[Heuristic verb-suffix matching]\n"
+  local B='[{"id":"abc12345-def0","title":"Use parameterized SQL queries","recommendation":"x","tier":"blocker"}]'
+
+  local pass=0 fail=0
+  local label
+  for phrase in \
+    "I created the parameterized SQL helper" \
+    "Refactoring the parameterized SQL caller" \
+    "fixed the parameterized SQL injection bug" \
+    "switching to parameterized SQL queries" \
+    "I will use parameterized SQL going forward" \
+    "implemented the parameterized SQL fix" \
+    "added parameterized SQL helpers"; do
+    if pekg_heuristic_ack "$B" "$phrase"; then
+      PASS=$((PASS + 1)); echo "  PASS  verb-suffix accepted: $phrase"
+    else
+      FAIL=$((FAIL + 1)); FAILED_TESTS+=("verb-suffix accepted: $phrase")
+      echo "  FAIL  verb-suffix rejected: $phrase"
+    fi
+  done
+
+  # No verb at all → still fails (action-verb arm is enforced).
+  if pekg_heuristic_ack "$B" "I see the parameterized SQL queries"; then
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("verb-suffix: bare reference w/o verb should fail")
+    echo "  FAIL  bare reference w/o verb should fail (got pass)"
+  else
+    PASS=$((PASS + 1)); echo "  PASS  bare reference w/o verb correctly fails"
+  fi
+}
+
+# --- Test 5d: PreToolUse auto-passes after 3 denials of the same blocker ----
+# A30c safety net. Heuristic-uncatchable acks (or no acks at all) shouldn't
+# infinite-loop the agent. After PEKG_BLOCKER_DENIAL_THRESHOLD denials of
+# the SAME blocker on the same session, force-ack and allow.
+test_pretooluse_loop_bound_safety_net() {
+  TEST_HOME=$(mktemp -d)
+  mkdir -p "$TEST_HOME/.pekg/sessions" "$TEST_HOME/.pekg/session-state"
+  echo '{"token":"test"}' > "$TEST_HOME/.pekg/config.json"
+  touch "$TEST_HOME/.pekg/session-state/t5d.status_called"
+  jq -n '{
+    task:{},
+    blockers:[{id:"loop-blkr",title:"unmatchable blocker",recommendation:"r",tier:"blocker"}],
+    timestamp:0,
+    expiresAt:9999999999
+  }' > "$TEST_HOME/.pekg/sessions/t5d.json"
+
+  # No transcript — heuristic can't pass. Each call should bump the denial
+  # counter; after 3 calls the gate auto-passes (empty stdout = allow).
+  local out1 out2 out3 out4 d1 d2
+  out1=$(run_hook "$DIST_CC/pretooluse.sh" '{"session_id":"t5d","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"}}')
+  out2=$(run_hook "$DIST_CC/pretooluse.sh" '{"session_id":"t5d","tool_name":"Edit","tool_input":{"file_path":"/tmp/y.ts"}}')
+  out3=$(run_hook "$DIST_CC/pretooluse.sh" '{"session_id":"t5d","tool_name":"Edit","tool_input":{"file_path":"/tmp/z.ts"}}')
+  out4=$(run_hook "$DIST_CC/pretooluse.sh" '{"session_id":"t5d","tool_name":"Edit","tool_input":{"file_path":"/tmp/w.ts"}}')
+  d1=$(printf '%s' "$out1" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+  d2=$(printf '%s' "$out2" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)
+
+  assert_eq "PreToolUse safety net: attempt 1 → deny" "deny" "$d1"
+  assert_eq "PreToolUse safety net: attempt 2 → deny" "deny" "$d2"
+  # On attempt 3, the counter hits threshold (3) — force-acked + allow (empty stdout).
+  assert_eq "PreToolUse safety net: attempt 3 → allow (force-acked, canary)" "" "$out3"
+  assert_eq "PreToolUse safety net: attempt 4 → allow (cooldown holds)" "" "$out4"
+
+  # Verify ackedBlockers was written for the force-acked blocker.
+  local acked_present
+  acked_present=$(jq -r '.ackedBlockers["loop-blkr"] // empty' "$TEST_HOME/.pekg/sessions/t5d.json")
+  if [ -n "$acked_present" ]; then
+    PASS=$((PASS + 1)); echo "  PASS  PreToolUse safety net: force-acked entry persisted in ackedBlockers"
+  else
+    FAIL=$((FAIL + 1)); FAILED_TESTS+=("PreToolUse safety net: force-acked entry persisted")
+    echo "  FAIL  ackedBlockers[loop-blkr] missing after force-ack"
+  fi
+
+  rm -rf "$TEST_HOME"
+}
+
+# --- Test 5c: PreToolUse no transcript / no ack → still denies ---------------
+test_pretooluse_no_ack_still_denies() {
+  TEST_HOME=$(mktemp -d)
+  mkdir -p "$TEST_HOME/.pekg/sessions" "$TEST_HOME/.pekg/session-state"
+  echo '{"token":"test-token"}' > "$TEST_HOME/.pekg/config.json"
+  touch "$TEST_HOME/.pekg/session-state/t5c.status_called"
+  jq -n '{
+    task:{},
+    blockers:[{id:"x",title:"Some blocker",recommendation:"r",tier:"blocker"}],
+    timestamp:0,
+    expiresAt:9999999999
+  }' > "$TEST_HOME/.pekg/sessions/t5c.json"
+
+  # No transcript_path in the event → in-turn ack short-circuits to "no ack".
+  local out
+  out=$(run_hook "$DIST_CC/pretooluse.sh" '{"session_id":"t5c","tool_name":"Edit","tool_input":{"file_path":"/tmp/x.ts"}}')
+  local decision
+  decision=$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // empty')
+  assert_eq "PreToolUse no transcript + active blocker → deny" "deny" "$decision"
 
   rm -rf "$TEST_HOME"
 }
@@ -727,6 +968,12 @@ test_sessionstart_offline_blocker
 test_pretooluse_blocker_gate
 test_pretooluse_dangerous_bash
 test_pretooluse_no_blockers_allow
+test_pretooluse_in_turn_ack_clears_gate
+test_pretooluse_in_turn_ack_multi_event_shape
+test_heuristic_accepts_verb_suffixes
+test_heuristic_accepts_prefix_stripped_title
+test_pretooluse_loop_bound_safety_net
+test_pretooluse_no_ack_still_denies
 test_permissionrequest_blocker
 test_precompact_structured_prompt
 test_stop_kb_ingest

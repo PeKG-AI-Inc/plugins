@@ -1,6 +1,6 @@
 {
   "name": "@pekg/opencode-plugin",
-  "version": "3.14.0",
+  "version": "3.14.6",
   "private": true,
   "type": "module",
   "scripts": {
